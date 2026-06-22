@@ -1,0 +1,6 @@
+{
+  "name": "Sentinel LifeOps",
+  "description": "Executive function support system with real-time text parsing, time cartography (reverse timeline creation), and executive helper triggers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["LOCAL_CLAUDE_CODE_CLI", "SERVER_SIDE_CLAUDE_SDK", "ANDROID_PHONE_DATA_BRIDGE", "ANTIGRAVITY_READY"]
+}

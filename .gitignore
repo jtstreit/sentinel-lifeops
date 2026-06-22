@@ -1,0 +1,31 @@
+node_modules/
+build/
+dist/
+*.apk
+*cookiejar*
+android-lifeops/.gradle/
+android-lifeops/app/build/
+android-lifeops/**/build/
+android-lifeops/**/*.apk
+android-lifeops/**/*.png
+tools/vendor/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# --- Protect private telemetry + tooling cruft (do not commit) ---
+.sentinel-lifeops/
+.review-baseline/
+.snapshot-pre-situations/
+.antigravitycli/
+artifacts/
+claude-auth-login-*.txt
+
+# Android build + signing
+.gradle/
+local.properties
+*.keystore
+*.jks
+captures/

@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "install",
+      "type": "shell",
+      "command": "npm install",
+      "problemMatcher": []
+    },
+    {
+      "label": "dev",
+      "type": "shell",
+      "command": "npm run dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "sentinel-lifeops",
+        "pattern": {
+          "regexp": "."
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Sentinel LifeOps running",
+          "endsPattern": "Sentinel LifeOps running"
+        }
+      }
+    },
+    {
+      "label": "lint",
+      "type": "shell",
+      "command": "npm run lint",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "npm run build",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "deploy dry run",
+      "type": "shell",
+      "command": "npm run deploy:dry-run",
+      "problemMatcher": []
+    },
+    {
+      "label": "deploy cloudflare",
+      "type": "shell",
+      "command": "npm run deploy",
+      "problemMatcher": []
+    }
+  ]
+}

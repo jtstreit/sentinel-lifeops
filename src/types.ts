@@ -1,0 +1,87 @@
+export type AnchorStatus = "draft" | "tentative" | "confirmed" | "canceled" | "revised";
+export type ConfidenceLevel = "low" | "medium" | "high";
+export type RecommendedAction =
+  | "add to calendar"
+  | "ask user"
+  | "ignore"
+  | "update existing event"
+  | "cancel existing event";
+
+export type SentinelSource =
+  | "sms"
+  | "notification"
+  | "calendar"
+  | "location"
+  | "app_usage"
+  | "screen_text"
+  | "user_note";
+
+export interface TimeAnchor {
+  id: string;
+  title: string;
+  person: string;
+  raw_excerpt: string;
+  inferred_date: string;
+  inferred_time?: string | null;
+  location?: string | null;
+  confidence: ConfidenceLevel;
+  status: AnchorStatus;
+  needs_confirmation: boolean;
+  recommended_action: RecommendedAction;
+}
+
+export type ExecutiveStepState = "current" | "pending" | "done";
+
+export interface ExecutiveStep {
+  id: string;
+  title: string;
+  durationMinutes: number;
+  state: ExecutiveStepState;
+}
+
+export interface ReverseStep {
+  id: string;
+  label: string;
+  durationMinutes: number;
+  absoluteTime: string;
+  isActionable: boolean;
+  type: "prep" | "travel" | "buffer" | "anchor";
+  isCompleted: boolean;
+}
+
+export interface ExecutiveTask {
+  id: string;
+  title: string;
+  estimatedDurationMinutes: number;
+  isCompleted: boolean;
+  associatedAnchorId?: string | null;
+  targetTime?: string | null;
+  avoidanceTarget: string;
+  nextPhysicalAction: string;
+  steps: ExecutiveStep[];
+}
+
+export interface SentinelEvent {
+  id: string;
+  timestamp: string;
+  source: SentinelSource;
+  title: string;
+  content: string;
+  relevanceScore?: number;
+  relevanceReason?: string;
+  capturedAtEpochMillis?: number;
+  packageName?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SlipAutopsy {
+  id: string;
+  task_id: string;
+  what_slipped: string;
+  expected_duration: number;
+  actual_duration: number;
+  hidden_steps: string;
+  interruption_point: string;
+  future_fix: string;
+  created_at: string;
+}

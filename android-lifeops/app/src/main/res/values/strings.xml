@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Sentinel LifeOps</string>
+    <string name="notification_listener_label">Sentinel LifeOps Notifications</string>
+    <string name="accessibility_label">Sentinel LifeOps Accessibility</string>
+    <string name="accessibility_description">Reads owner-approved foreground app text so Sentinel LifeOps can find real tasks.</string>
+</resources>

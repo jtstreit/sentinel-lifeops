@@ -1,0 +1,17 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "npm.packageManager": "npm",
+    "editor.formatOnSave": true
+  },
+  "extensions": {
+    "recommendations": [
+      "dbaeumer.vscode-eslint"
+    ]
+  }
+}

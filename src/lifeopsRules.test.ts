@@ -1,0 +1,277 @@
+import { describe, expect, it } from "vitest";
+import type { ExecutiveTask, SentinelEvent } from "./types";
+import {
+  coerceTimeString,
+  extractTasksHeuristic,
+  inferTargetTimeFromSignal,
+  isExpiredSignal,
+  isTaskCandidateSignal,
+  migrateStoredState,
+  scoreSignal,
+  scoreTelemetryLog,
+  STORAGE_SCHEMA_VERSION,
+} from "./lifeopsRules";
+
+const NOW = new Date(2026, 4, 31, 13, 0).getTime();
+
+function signal(overrides: Partial<SentinelEvent>): SentinelEvent {
+  return {
+    id: overrides.id || "fixture",
+    timestamp: overrides.timestamp || "10:00 AM",
+    source: overrides.source || "notification",
+    title: overrides.title || "Fixture",
+    content: overrides.content || "",
+    capturedAtEpochMillis: overrides.capturedAtEpochMillis || NOW,
+    packageName: overrides.packageName,
+  };
+}
+
+describe("lifeops scoring rules", () => {
+  it("keeps app usage and ordinary calls from becoming fake tasks", () => {
+    const distraction = signal({
+      id: "youtube",
+      source: "app_usage",
+      title: "App usage: YouTube",
+      content: "Estimated focus block: 20 minutes foreground",
+      packageName: "com.google.android.youtube",
+    });
+    const launcher = signal({
+      id: "launcher",
+      source: "app_usage",
+      title: "App usage: Launcher",
+      content: "Home screen foreground",
+      packageName: "com.android.launcher",
+    });
+    const ordinaryCall = signal({
+      id: "call",
+      source: "notification",
+      title: "Incoming call: Dad",
+      content: "Duration: 120 seconds",
+    });
+
+    expect(scoreSignal(distraction, NOW)).toBe(2);
+    expect(isTaskCandidateSignal(distraction, NOW)).toBe(false);
+    expect(scoreSignal(launcher, NOW)).toBe(0);
+    expect(isTaskCandidateSignal(launcher, NOW)).toBe(false);
+    expect(scoreSignal(ordinaryCall, NOW)).toBe(1);
+    expect(isTaskCandidateSignal(ordinaryCall, NOW)).toBe(false);
+  });
+
+  it("allows missed calls and concrete messages to become tasks", () => {
+    const missedCall = signal({
+      id: "missed",
+      source: "notification",
+      title: "Missed call: Dad",
+      content: "Duration: 0 seconds",
+    });
+    const message = signal({
+      id: "sms",
+      source: "sms",
+      title: "SMS from Jordan",
+      content: "Can you pick up meds at 4pm?",
+    });
+    const placeholder = signal({
+      id: "placeholder",
+      source: "notification",
+      title: "Follow up: Cloud_ file -- Reminder",
+      content: "Open the source signal only",
+    });
+
+    expect(scoreSignal(missedCall, NOW)).toBe(4);
+    expect(isTaskCandidateSignal(missedCall, NOW)).toBe(true);
+    expect(scoreSignal(message, NOW)).toBeGreaterThanOrEqual(5);
+    expect(isTaskCandidateSignal(message, NOW)).toBe(true);
+    expect(scoreSignal(placeholder, NOW)).toBe(0);
+    expect(isTaskCandidateSignal(placeholder, NOW)).toBe(false);
+
+    const tasks = extractTasksHeuristic([missedCall, message, placeholder], NOW);
+    expect(tasks.map(task => task.title)).toContain("Return missed call from Dad");
+    expect(tasks.find(task => task.title.includes("meds"))?.targetTime).toBe("16:00");
+  });
+
+  it("lets foreground screen text become a task when the visible app text is actionable", () => {
+    const foregroundText = signal({
+      id: "screen",
+      source: "screen_text",
+      title: "Foreground screen text: com.google.android.apps.messaging",
+      content: "Jordan: Could you bring the paperwork to the appointment at 2pm?",
+      packageName: "com.google.android.apps.messaging",
+    });
+
+    expect(scoreSignal(foregroundText, NOW)).toBeGreaterThanOrEqual(5);
+    expect(isTaskCandidateSignal(foregroundText, NOW)).toBe(true);
+
+    const task = extractTasksHeuristic([foregroundText], NOW)[0];
+    expect(task.title).toContain("Prepare item");
+    expect(task.targetTime).toBe("14:00");
+  });
+
+  it("blocks Sentinel and system foreground text from self-generating tasks", () => {
+    const selfCapture = signal({
+      id: "self",
+      source: "screen_text",
+      title: "Foreground screen text: com.jackson.sentinellifeops",
+      content: "Refresh phone data | Create task cards | Have AI check",
+      packageName: "com.jackson.sentinellifeops",
+    });
+
+    expect(scoreSignal(selfCapture, NOW)).toBe(0);
+    expect(isTaskCandidateSignal(selfCapture, NOW)).toBe(false);
+    expect(extractTasksHeuristic([selfCapture], NOW)).toHaveLength(0);
+  });
+
+  it("does not suggest tasks when the explicit time or date has already passed", () => {
+    const staleToday = signal({
+      id: "stale-today",
+      source: "sms",
+      title: "SMS from Jordan",
+      content: "Can you bring paperwork today at 9am?",
+    });
+    const staleDate = signal({
+      id: "stale-date",
+      source: "screen_text",
+      title: "Foreground screen text: Messages",
+      content: "Alex: please send the form May 30 at 4pm",
+    });
+    const future = signal({
+      id: "future",
+      source: "sms",
+      title: "SMS from Jordan",
+      content: "Can you bring paperwork tomorrow at 9am?",
+    });
+
+    expect(isExpiredSignal(staleToday, NOW)).toBe(true);
+    expect(scoreSignal(staleToday, NOW)).toBe(0);
+    expect(isTaskCandidateSignal(staleToday, NOW)).toBe(false);
+    expect(isExpiredSignal(staleDate, NOW)).toBe(true);
+    expect(isTaskCandidateSignal(staleDate, NOW)).toBe(false);
+    expect(isExpiredSignal(future, NOW)).toBe(false);
+    expect(isTaskCandidateSignal(future, NOW)).toBe(true);
+    expect(extractTasksHeuristic([staleToday, staleDate, future], NOW)).toHaveLength(1);
+  });
+});
+
+describe("time inference", () => {
+  it("coerces only valid HH:MM strings", () => {
+    expect(coerceTimeString("4:05")).toBe("04:05");
+    expect(coerceTimeString("23:59")).toBe("23:59");
+    expect(coerceTimeString("24:00")).toBeNull();
+    expect(coerceTimeString("12:60")).toBeNull();
+    expect(coerceTimeString("noon")).toBeNull();
+  });
+
+  it("infers explicit, contextual, and calendar times", () => {
+    const calendarStart = new Date(2026, 4, 31, 14, 15).getTime();
+    expect(inferTargetTimeFromSignal(signal({ content: "Please arrive by 4:30pm." }))).toBe("16:30");
+    expect(inferTargetTimeFromSignal(signal({ title: "Meeting at 4", content: "Bring notes." }))).toBe("16:00");
+    expect(inferTargetTimeFromSignal(signal({
+      source: "calendar",
+      title: "Calendar: Therapy",
+      content: "Office visit",
+      capturedAtEpochMillis: calendarStart,
+    }))).toBe("14:15");
+  });
+});
+
+describe("stored state migration", () => {
+  it("strips placeholder tasks and clears stale generated feeds", () => {
+    const realTask: ExecutiveTask = {
+      id: "real",
+      title: "Pay rent",
+      estimatedDurationMinutes: 10,
+      isCompleted: false,
+      targetTime: "16:00",
+      avoidanceTarget: "Opening unrelated apps",
+      nextPhysicalAction: "Open the rent portal.",
+      steps: [{ id: "step", title: "Open the rent portal", durationMinutes: 5, state: "current" }],
+    };
+    const placeholderTask = {
+      id: "fake",
+      title: "Follow up: Cloud_ file -- Reminder",
+      estimatedDurationMinutes: 15,
+      isCompleted: false,
+      avoidanceTarget: "Avoidance rabbit hole",
+      nextPhysicalAction: "",
+      steps: [{ id: "fake-step", title: "Open the source signal only", durationMinutes: 3, state: "current" }],
+    };
+    const data = new Map<string, string>([
+      ["sentinel-lifeops:schemaVersion", "old"],
+      ["sentinel-lifeops:activeTasks", JSON.stringify([placeholderTask, realTask])],
+      ["sentinel-lifeops:extractedTasks", JSON.stringify([placeholderTask])],
+      ["sentinel-lifeops:sentinelFeed", JSON.stringify([{ title: "sample" }])],
+    ]);
+    const storage = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => data.set(key, value),
+      removeItem: (key: string) => data.delete(key),
+    };
+
+    migrateStoredState(storage);
+
+    expect(JSON.parse(data.get("sentinel-lifeops:activeTasks") || "[]")).toEqual([realTask]);
+    expect(data.has("sentinel-lifeops:extractedTasks")).toBe(false);
+    expect(data.has("sentinel-lifeops:sentinelFeed")).toBe(false);
+    expect(data.get("sentinel-lifeops:schemaVersion")).toBe(STORAGE_SCHEMA_VERSION);
+  });
+});
+
+describe("server-facing heuristic aliases", () => {
+  const fixtures: Array<{ name: string; log: SentinelEvent; score: number; candidate: boolean }> = [
+    {
+      name: "android launcher usage",
+      log: signal({ source: "app_usage", title: "App usage: Launcher", content: "foreground", packageName: "com.android.launcher" }),
+      score: 0,
+      candidate: false,
+    },
+    {
+      name: "scroll drift",
+      log: signal({ source: "app_usage", title: "App usage: Instagram", content: "scrolling reels", packageName: "com.instagram.android" }),
+      score: 2,
+      candidate: false,
+    },
+    {
+      name: "missed call",
+      log: signal({ source: "notification", title: "Missed call: Mom", content: "Duration: 0 seconds" }),
+      score: 4,
+      candidate: true,
+    },
+    {
+      name: "action sms",
+      log: signal({ source: "sms", title: "SMS from Alex", content: "Could you send the form by 3pm?" }),
+      score: 6,
+      candidate: true,
+    },
+    {
+      name: "foreground screen task",
+      log: signal({ source: "screen_text", title: "Foreground screen text: Messages", content: "Please bring paperwork at 2pm." }),
+      score: 5,
+      candidate: true,
+    },
+    {
+      name: "weather noise",
+      log: signal({ source: "notification", title: "Weather", content: "Rain forecast and cooler than yesterday." }),
+      score: 0,
+      candidate: false,
+    },
+  ];
+
+  it("keeps client and server scoring fixtures in parity", () => {
+    for (const fixture of fixtures) {
+      expect(scoreSignal(fixture.log, NOW), fixture.name).toBe(fixture.score);
+      expect(scoreTelemetryLog(fixture.log, NOW), fixture.name).toBe(fixture.score);
+      expect(isTaskCandidateSignal(fixture.log, NOW), fixture.name).toBe(fixture.candidate);
+    }
+  });
+
+  it("extracts only real tasks through the server fallback path", () => {
+    const tasks = extractTasksHeuristic(fixtures.map(fixture => fixture.log), NOW);
+    expect(tasks).toHaveLength(3);
+    expect(tasks.map(task => task.title)).toEqual([
+      "Send or submit: Could you send the form by 3pm?",
+      "Prepare item: Please bring paperwork at 2pm.",
+      "Return missed call from Mom",
+    ]);
+    expect(tasks[0].targetTime).toBe("15:00");
+    expect(tasks[1].targetTime).toBe("14:00");
+  });
+});
