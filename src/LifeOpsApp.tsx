@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import type { ExecutiveTask, SentinelEvent, SlipAutopsy } from "./types";
 import { formatTo12Hour, generateReverseTimeline, minutesToTimeString } from "./cartographer";
-import { InfoCard, Panel, Pill, SectionIntro, StatTile } from "./components/ui";
+import { InfoCard, Pill, SectionIntro, StatTile } from "./components/ui";
 import {
   buildLocalRelevanceAudit,
   buildSmartSituations,
@@ -182,7 +182,7 @@ function primaryButtonClass(tone: "cyan" | "ai" | "green" | "amber" | "slate" | 
     green: "bg-emerald-500 text-slate-950 hover:bg-emerald-400 border-emerald-400",
     amber: "bg-amber-400 text-slate-950 hover:bg-amber-300 border-amber-300",
     slate: "bg-surface-raised text-ink hover:bg-slate-700 border-line",
-    red: "bg-rose-500 text-white hover:bg-rose-400 border-rose-400"
+    red: "bg-rose-500 text-ink hover:bg-rose-400 border-rose-400"
   };
   return `${map[tone]} border rounded-xl px-4 py-3 text-left font-semibold transition-colors disabled:opacity-45 disabled:cursor-not-allowed`;
 }
@@ -1041,7 +1041,7 @@ export default function LifeOpsApp() {
       <section className="rounded-lg border border-amber-400/30 bg-slate-900 p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <h2 className="text-lg font-black text-white">Possible cleanup</h2>
+            <h2 className="text-lg font-bold text-ink">Possible cleanup</h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-400">{relevanceAudit.summary}</p>
           </div>
           <span className="rounded-full bg-amber-400/10 px-3 py-1 text-xs font-bold text-amber-200">
@@ -1070,7 +1070,7 @@ export default function LifeOpsApp() {
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <button onClick={() => setRelevanceAudit(null)} className="rounded-lg border border-slate-700 px-4 py-3 text-sm font-bold text-slate-300 hover:bg-slate-800">Keep all</button>
-              <button onClick={clearSelectedAuditItems} className="rounded-lg bg-amber-400 px-4 py-3 text-sm font-black text-slate-950 hover:bg-amber-300">
+              <button onClick={clearSelectedAuditItems} className="rounded-lg bg-amber-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-amber-300">
                 Clear selected as not tasks{selectedAuditCount ? ` (${selectedAuditCount})` : ""}
               </button>
             </div>
@@ -1089,7 +1089,7 @@ export default function LifeOpsApp() {
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <p className="text-sm font-bold text-cyan-200">AI Review</p>
-          <h2 className="mt-2 text-lg font-black text-white">Ask or clean up the same task context</h2>
+          <h2 className="mt-2 text-lg font-bold text-ink">Ask or clean up the same task context</h2>
           <p className="mt-2 text-sm leading-relaxed text-slate-400">
             The check button looks for irrelevant cards to clear. The question box asks about priorities, reasons, and what to ignore.
           </p>
@@ -1115,13 +1115,13 @@ export default function LifeOpsApp() {
               handleAskSentinel();
             }
           }}
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400"
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
           placeholder="Ask the AI route what matters, why a card exists, or what to ignore"
         />
         <button
           onClick={handleAskSentinel}
           disabled={isAsking}
-          className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-black text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+          className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
         >
           {isAsking ? "Asking..." : "Ask"}
         </button>
@@ -1137,7 +1137,7 @@ export default function LifeOpsApp() {
   const renderTaskCard = (task: ExecutiveTask) => (
     <article key={task.id} className="rounded-lg border border-cyan-400/25 bg-slate-900 p-4 shadow-sm">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-black text-cyan-200">Suggested task</span>
+        <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-bold text-cyan-200">Suggested task</span>
         <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">{task.estimatedDurationMinutes} min</span>
         {(taskTargetOverrides[task.id] || task.targetTime) && (
           <span className="rounded-full bg-amber-400/10 px-2.5 py-1 text-xs font-bold text-amber-200">
@@ -1147,7 +1147,7 @@ export default function LifeOpsApp() {
       </div>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-bold text-white">{task.title}</h3>
+          <h3 className="text-base font-bold text-ink">{task.title}</h3>
           <p className="mt-2 text-sm leading-relaxed text-slate-300">{task.nextPhysicalAction}</p>
         </div>
       </div>
@@ -1187,7 +1187,7 @@ export default function LifeOpsApp() {
           type="time"
           value={taskTargetOverrides[task.id] ?? task.targetTime ?? ""}
           onChange={event => setTaskTargetOverrides(prev => ({ ...prev, [task.id]: event.target.value }))}
-          className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400"
+          className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
         />
       </label>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -1322,7 +1322,7 @@ export default function LifeOpsApp() {
                 <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                   <div>
                     <p className="text-sm font-bold text-amber-200">Possible phone drift</p>
-                    <h3 className="mt-1 text-lg font-black text-white">{cleanSignalFragment(driftSignal.title, 90)}</h3>
+                    <h3 className="mt-1 text-lg font-bold text-ink">{cleanSignalFragment(driftSignal.title, 90)}</h3>
                     <p className="mt-2 text-sm text-amber-100/80">This is not a new task. It is a warning that app activity may be pulling you away from the current task.</p>
                   </div>
                   <ActionButton icon={ChevronRight} label="Return to task" hint="Shows the next real action" tone="amber" onClick={handleReturnFromDrift} />
@@ -1359,7 +1359,7 @@ export default function LifeOpsApp() {
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="max-w-2xl">
                   <p className="text-sm font-bold text-cyan-200">Suggested Tasks</p>
-                  <h2 className="mt-2 text-2xl font-black text-white">Phone language turned into task cards</h2>
+                  <h2 className="mt-2 text-2xl font-bold text-ink">Phone language turned into task cards</h2>
                   <p className="mt-2 text-sm leading-relaxed text-slate-400">
                     Messages, missed calls, calendar items, notifications, and visible app text land here only when they contain a concrete next action.
                   </p>
@@ -1373,21 +1373,18 @@ export default function LifeOpsApp() {
             </section>
 
             <section className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-                <div className="flex items-center gap-2 text-sm font-bold text-cyan-200"><ClipboardList className="h-5 w-5" /> Suggested</div>
-                <p className="mt-3 text-3xl font-black text-white">{visibleSuggestionTasks.length}</p>
-                <p className="mt-1 text-sm text-slate-400">cards waiting for accept or dismiss</p>
-              </div>
-              <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-                <div className="flex items-center gap-2 text-sm font-bold text-emerald-200"><Sparkles className="h-5 w-5" /> Task-ready language</div>
-                <p className="mt-3 text-3xl font-black text-white">{taskReadySignals.length}</p>
-                <p className="mt-1 text-sm text-slate-400">items with an action, deadline, or missed call</p>
-              </div>
-              <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-                <div className="flex items-center gap-2 text-sm font-bold text-slate-300"><Inbox className="h-5 w-5" /> Context only</div>
-                <p className="mt-3 text-3xl font-black text-white">{Math.max(0, visibleSignals.length - taskReadySignals.length)}</p>
-                <p className="mt-1 text-sm text-slate-400">phone items kept out of the task list</p>
-              </div>
+              <InfoCard icon={ClipboardList} title="Suggested">
+                <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
+                <p className="mt-1 text-sm text-ink-muted">cards waiting for accept or dismiss</p>
+              </InfoCard>
+              <InfoCard icon={Sparkles} title="Task-ready language" iconClass="text-emerald-200">
+                <p className="text-3xl font-bold text-ink">{taskReadySignals.length}</p>
+                <p className="mt-1 text-sm text-ink-muted">items with an action, deadline, or missed call</p>
+              </InfoCard>
+              <InfoCard icon={Inbox} title="Context only" iconClass="text-ink-faint">
+                <p className="text-3xl font-bold text-ink">{Math.max(0, visibleSignals.length - taskReadySignals.length)}</p>
+                <p className="mt-1 text-sm text-ink-muted">phone items kept out of the task list</p>
+              </InfoCard>
             </section>
 
             {renderClaudeReviewPanel()}
@@ -1396,7 +1393,7 @@ export default function LifeOpsApp() {
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-lg font-black text-white">Ready to decide</h2>
+                  <h2 className="text-lg font-bold text-ink">Ready to decide</h2>
                   <p className="mt-1 text-sm text-slate-400">Start the real task, set a time, or mark the card as not a task.</p>
                 </div>
                 {visibleSuggestionTasks.length > 0 && (
@@ -1424,7 +1421,7 @@ export default function LifeOpsApp() {
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
                   <p className="text-sm font-bold text-cyan-200">Phone Inbox</p>
-                  <h2 className="mt-2 text-2xl font-black text-white">Raw phone material Sentinel can see</h2>
+                  <h2 className="mt-2 text-2xl font-bold text-ink">Raw phone material Sentinel can see</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Use this page to refresh Android data, paste a missing item, and inspect what was captured. Suggested tasks live on their own tab.</p>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
@@ -1436,7 +1433,7 @@ export default function LifeOpsApp() {
             </section>
 
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h2 className="text-lg font-black text-white">Paste a phone item</h2>
+              <h2 className="text-lg font-bold text-ink">Paste a phone item</h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-400">Useful in desktop preview, or when Android did not expose a specific message yet.</p>
               <div className="mt-4 grid gap-3 md:grid-cols-[160px_1fr]">
                 <label className="block">
@@ -1444,7 +1441,7 @@ export default function LifeOpsApp() {
                   <select
                     value={manualSignalSource}
                     onChange={event => setManualSignalSource(event.target.value as SentinelEvent["source"])}
-                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400"
+                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
                   >
                     <option value="sms">SMS</option>
                     <option value="notification">Notification</option>
@@ -1458,7 +1455,7 @@ export default function LifeOpsApp() {
                   <input
                     value={manualSignalTitle}
                     onChange={event => setManualSignalTitle(event.target.value)}
-                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400"
+                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
                     placeholder="Who or what is this from?"
                   />
                 </label>
@@ -1469,14 +1466,14 @@ export default function LifeOpsApp() {
                   value={manualSignalContent}
                   onChange={event => setManualSignalContent(event.target.value)}
                   rows={4}
-                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400"
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
                   placeholder="Paste the real message, reminder, event, or screen text here."
                 />
               </label>
               <div className="mt-4 flex justify-end">
                 <button
                   onClick={handleAddManualSignal}
-                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-black text-slate-950 hover:bg-cyan-300"
+                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300"
                 >
                   Save and suggest
                 </button>
@@ -1484,7 +1481,7 @@ export default function LifeOpsApp() {
             </section>
 
             <section className="space-y-3">
-              <h2 className="text-lg font-black text-white">Recent phone signals</h2>
+              <h2 className="text-lg font-bold text-ink">Recent phone signals</h2>
               {visibleSignals.length > 0 ? visibleSignals.map(renderSignalCard) : (
                 <EmptyState
                   title="No useful phone signals visible"
@@ -1514,18 +1511,12 @@ export default function LifeOpsApp() {
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div>
                       <p className="text-sm font-bold text-emerald-200">Current Task</p>
-                      <h2 className="mt-2 text-2xl font-black text-white">{activeTask.title}</h2>
+                      <h2 className="mt-2 text-2xl font-bold text-ink">{activeTask.title}</h2>
                       <p className="mt-3 text-base leading-relaxed text-slate-300">{nextStep?.title || activeTask.nextPhysicalAction}</p>
                     </div>
                     <div className="grid grid-cols-2 gap-3 lg:w-72">
-                      <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                        <p className="text-xs font-bold text-slate-500">Estimated</p>
-                        <p className="mt-1 text-2xl font-black text-white">{activeTask.estimatedDurationMinutes}m</p>
-                      </div>
-                      <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                        <p className="text-xs font-bold text-slate-500">Done</p>
-                        <p className="mt-1 text-2xl font-black text-white">{activeTask.steps.filter(step => step.state === "done").length}/{activeTask.steps.length}</p>
-                      </div>
+                      <StatTile label="Estimated" value={`${activeTask.estimatedDurationMinutes}m`} />
+                      <StatTile label="Done" value={`${activeTask.steps.filter(step => step.state === "done").length}/${activeTask.steps.length}`} />
                     </div>
                   </div>
                   <label className="mt-5 block max-w-xs">
@@ -1534,7 +1525,7 @@ export default function LifeOpsApp() {
                       type="time"
                       value={activeTask.targetTime || ""}
                       onChange={event => updateActiveTaskTargetTime(event.target.value)}
-                      className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400"
+                      className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
                     />
                   </label>
                   <div className="mt-5 grid gap-3 md:grid-cols-4">
@@ -1546,7 +1537,7 @@ export default function LifeOpsApp() {
                 </section>
 
                 <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                  <h3 className="text-lg font-black text-white">Steps</h3>
+                  <h3 className="text-lg font-bold text-ink">Steps</h3>
                   <div className="mt-4 space-y-3">
                     {activeTask.steps.map((step, index) => (
                       <button
@@ -1558,7 +1549,7 @@ export default function LifeOpsApp() {
                           "border-slate-800 bg-slate-950/60 hover:border-slate-700"
                         }`}
                       >
-                        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-black ${
+                        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
                           step.state === "done" ? "bg-emerald-500 text-slate-950" :
                           step.state === "current" ? "bg-cyan-400 text-slate-950" :
                           "bg-slate-800 text-slate-300"
@@ -1566,7 +1557,7 @@ export default function LifeOpsApp() {
                           {step.state === "done" ? <Check className="h-4 w-4" /> : index + 1}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-bold text-white">{step.title}</span>
+                          <span className="block text-sm font-bold text-ink">{step.title}</span>
                           <span className="mt-1 block text-xs text-slate-500">{step.durationMinutes} minutes</span>
                         </span>
                       </button>
@@ -1578,19 +1569,19 @@ export default function LifeOpsApp() {
                   <section className="grid gap-4 lg:grid-cols-2">
                     {activeTask.targetTime && (
                       <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                        <h3 className="text-lg font-black text-white">Time plan</h3>
+                        <h3 className="text-lg font-bold text-ink">Time plan</h3>
                         <dl className="mt-4 space-y-3 text-sm">
-                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Prep starts</dt><dd className="font-bold text-white">{prepStartLabel}</dd></div>
-                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Leave by</dt><dd className="font-bold text-white">{hardLeaveLabel}</dd></div>
-                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Target</dt><dd className="font-bold text-white">{formatTo12Hour(activeTask.targetTime)}</dd></div>
+                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Prep starts</dt><dd className="font-bold text-ink">{prepStartLabel}</dd></div>
+                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Leave by</dt><dd className="font-bold text-ink">{hardLeaveLabel}</dd></div>
+                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Target</dt><dd className="font-bold text-ink">{formatTo12Hour(activeTask.targetTime)}</dd></div>
                         </dl>
                       </div>
                     )}
                     {driftSignal && (
                       <div className="rounded-xl border border-amber-400/30 bg-amber-950/20 p-5">
-                        <h3 className="text-lg font-black text-white">Possible phone drift</h3>
+                        <h3 className="text-lg font-bold text-ink">Possible phone drift</h3>
                         <p className="mt-2 text-sm leading-relaxed text-amber-100/80">{cleanSignalFragment(driftSignal.title, 100)}</p>
-                        <button onClick={handleReturnFromDrift} className="mt-4 rounded-lg bg-amber-400 px-4 py-3 text-sm font-black text-slate-950 hover:bg-amber-300">Return to next action</button>
+                        <button onClick={handleReturnFromDrift} className="mt-4 rounded-lg bg-amber-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-amber-300">Return to next action</button>
                       </div>
                     )}
                   </section>
@@ -1599,10 +1590,10 @@ export default function LifeOpsApp() {
                 <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h3 className="text-lg font-black text-white">Delay notes</h3>
+                      <h3 className="text-lg font-bold text-ink">Delay notes</h3>
                       <p className="mt-1 text-sm text-slate-400">Use this only when a task ran late and you want future estimates to account for the hidden steps.</p>
                     </div>
-                    <button onClick={() => setShowDelayModal(true)} className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm font-bold text-white hover:bg-slate-700">
+                    <button onClick={() => setShowDelayModal(true)} className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm font-bold text-ink hover:bg-slate-700">
                       Log a delay
                     </button>
                   </div>
@@ -1610,7 +1601,7 @@ export default function LifeOpsApp() {
                     <div className="mt-4 space-y-2">
                       {slipAutopsies.slice(0, 3).map(note => (
                         <div key={note.id} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-sm">
-                          <p className="font-bold text-white">{note.what_slipped}</p>
+                          <p className="font-bold text-ink">{note.what_slipped}</p>
                           <p className="mt-1 text-slate-500">Expected {note.expected_duration}m, actual {note.actual_duration}m</p>
                         </div>
                       ))}
@@ -1628,7 +1619,7 @@ export default function LifeOpsApp() {
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
                   <p className="text-sm font-bold text-cyan-200">Phone Access</p>
-                  <h2 className="mt-2 text-2xl font-black text-white">{readyPermissionCount}/4 access groups ready</h2>
+                  <h2 className="mt-2 text-2xl font-bold text-ink">{readyPermissionCount}/4 access groups ready</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">These buttons open Android settings. After granting access, come back here and tap Refresh status.</p>
                 </div>
                 <ActionButton icon={RefreshCw} label="Refresh status" hint="Recheck Android grants" onClick={refreshAndroidStatus} />
@@ -1640,17 +1631,15 @@ export default function LifeOpsApp() {
                 <article key={item.key} className="rounded-xl border border-slate-800 bg-slate-900 p-5">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="text-base font-black text-white">{item.label}</h3>
+                      <h3 className="text-base font-bold text-ink">{item.label}</h3>
                       <p className="mt-2 text-sm leading-relaxed text-slate-400">{item.detail}</p>
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-xs font-black ${item.isReady ? "bg-emerald-500/15 text-emerald-200" : "bg-amber-500/15 text-amber-200"}`}>
-                      {item.isReady ? "Ready" : "Needs setup"}
-                    </span>
+                    <Pill tone={item.isReady ? "success" : "warn"}>{item.isReady ? "Ready" : "Needs setup"}</Pill>
                   </div>
                   <button
                     onClick={item.onAction}
                     disabled={!isAndroidBridgeAvailable}
-                    className="mt-5 w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-left text-sm font-bold text-white hover:bg-slate-700 disabled:opacity-45"
+                    className="mt-5 w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-left text-sm font-bold text-ink hover:bg-slate-700 disabled:opacity-45"
                   >
                     {isAndroidBridgeAvailable ? item.actionLabel : "Available on Android"}
                   </button>
@@ -1659,7 +1648,7 @@ export default function LifeOpsApp() {
             </section>
 
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h3 className="text-lg font-black text-white">Bridge status</h3>
+              <h3 className="text-lg font-bold text-ink">Bridge status</h3>
               <p className="mt-2 text-sm text-slate-400">{isAndroidBridgeAvailable ? "The installed APK is connected to the native Android bridge." : "This browser preview cannot read phone data directly. Install/open the Android app for live capture."}</p>
               {androidBridgeStatus && (
                 <pre className="mt-4 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-950 p-4 text-xs leading-relaxed text-slate-300">
@@ -1708,10 +1697,10 @@ export default function LifeOpsApp() {
           <div className="w-full max-w-lg rounded-xl border border-amber-400/30 bg-slate-900 p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-xl font-black text-white">Only these actions matter now</h2>
+                <h2 className="text-xl font-bold text-ink">Only these actions matter now</h2>
                 <p className="mt-2 text-sm leading-relaxed text-slate-400">Ignore everything else until one of these is done.</p>
               </div>
-              <button onClick={() => setShowStuckPanel(false)} className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Close stuck panel">
+              <button onClick={() => setShowStuckPanel(false)} className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-ink" aria-label="Close stuck panel">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -1725,8 +1714,8 @@ export default function LifeOpsApp() {
                   }}
                   className="flex w-full items-center gap-3 rounded-lg border border-slate-700 bg-slate-950 p-4 text-left hover:border-cyan-400/50"
                 >
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-400 text-sm font-black text-slate-950">{index + 1}</span>
-                  <span className="text-sm font-bold text-white">{step.title}</span>
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-400 text-sm font-bold text-slate-950">{index + 1}</span>
+                  <span className="text-sm font-bold text-ink">{step.title}</span>
                 </button>
               ))}
               {!activeTask && (
@@ -1742,38 +1731,38 @@ export default function LifeOpsApp() {
           <div className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-xl font-black text-white">Add a current task</h2>
+                <h2 className="text-xl font-bold text-ink">Add a current task</h2>
                 <p className="mt-2 text-sm text-slate-400">Backup path for something Android did not capture.</p>
               </div>
-              <button onClick={() => setShowAddTaskModal(false)} className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Close add task">
+              <button onClick={() => setShowAddTaskModal(false)} className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-ink" aria-label="Close add task">
                 <X className="h-5 w-5" />
               </button>
             </div>
             <div className="mt-5 space-y-4">
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Task name</span>
-                <input value={newTaskTitle} onChange={event => setNewTaskTitle(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" placeholder="What needs to happen?" />
+                <input value={newTaskTitle} onChange={event => setNewTaskTitle(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" placeholder="What needs to happen?" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">First physical action</span>
-                <input value={newTaskNextPhysical} onChange={event => setNewTaskNextPhysical(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" placeholder="The first thing your body does" />
+                <input value={newTaskNextPhysical} onChange={event => setNewTaskNextPhysical(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" placeholder="The first thing your body does" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Estimated minutes</span>
-                <input type="number" min={5} value={newTaskDuration} onChange={event => setNewTaskDuration(Number(event.target.value) || 15)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                <input type="number" min={5} value={newTaskDuration} onChange={event => setNewTaskDuration(Number(event.target.value) || 15)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Target time</span>
-                <input type="time" value={newTaskTargetTime} onChange={event => setNewTaskTargetTime(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                <input type="time" value={newTaskTargetTime} onChange={event => setNewTaskTargetTime(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Steps</span>
-                <textarea value={newStepsInput} onChange={event => setNewStepsInput(event.target.value)} rows={4} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" placeholder="One step per line. Optional: add minutes like (10m)." />
+                <textarea value={newStepsInput} onChange={event => setNewStepsInput(event.target.value)} rows={4} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" placeholder="One step per line. Optional: add minutes like (10m)." />
               </label>
             </div>
             <div className="mt-5 flex justify-end gap-3">
               <button onClick={() => setShowAddTaskModal(false)} className="rounded-lg px-4 py-3 text-sm font-bold text-slate-300 hover:bg-slate-800">Cancel</button>
-              <button onClick={handleCreateTask} className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-black text-slate-950 hover:bg-cyan-300">Make current task</button>
+              <button onClick={handleCreateTask} className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300">Make current task</button>
             </div>
           </div>
         </div>
@@ -1784,40 +1773,40 @@ export default function LifeOpsApp() {
           <div className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-xl font-black text-white">Log a delay</h2>
+                <h2 className="text-xl font-bold text-ink">Log a delay</h2>
                 <p className="mt-2 text-sm text-slate-400">This helps future task estimates stop being too small.</p>
               </div>
-              <button onClick={() => setShowDelayModal(false)} className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Close delay note">
+              <button onClick={() => setShowDelayModal(false)} className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-ink" aria-label="Close delay note">
                 <X className="h-5 w-5" />
               </button>
             </div>
             <div className="mt-5 space-y-4">
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">What ran late?</span>
-                <input value={slipWhat} onChange={event => setSlipWhat(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                <input value={slipWhat} onChange={event => setSlipWhat(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
               </label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
                   <span className="text-sm font-bold text-slate-300">Expected</span>
-                  <input type="number" min={1} value={slipExpected} onChange={event => setSlipExpected(Number(event.target.value) || 1)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                  <input type="number" min={1} value={slipExpected} onChange={event => setSlipExpected(Number(event.target.value) || 1)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
                 </label>
                 <label className="block">
                   <span className="text-sm font-bold text-slate-300">Actual</span>
-                  <input type="number" min={1} value={slipActual} onChange={event => setSlipActual(Number(event.target.value) || 1)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                  <input type="number" min={1} value={slipActual} onChange={event => setSlipActual(Number(event.target.value) || 1)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
                 </label>
               </div>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Hidden steps</span>
-                <textarea value={slipHiddenSteps} onChange={event => setSlipHiddenSteps(event.target.value)} rows={3} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                <textarea value={slipHiddenSteps} onChange={event => setSlipHiddenSteps(event.target.value)} rows={3} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Fix for next time</span>
-                <input value={slipFix} onChange={event => setSlipFix(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-white outline-none focus:border-cyan-400" />
+                <input value={slipFix} onChange={event => setSlipFix(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
               </label>
             </div>
             <div className="mt-5 flex justify-end gap-3">
               <button onClick={() => setShowDelayModal(false)} className="rounded-lg px-4 py-3 text-sm font-bold text-slate-300 hover:bg-slate-800">Cancel</button>
-              <button onClick={handleCreateDelayNote} className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-black text-slate-950 hover:bg-cyan-300">Save delay note</button>
+              <button onClick={handleCreateDelayNote} className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300">Save delay note</button>
             </div>
           </div>
         </div>
