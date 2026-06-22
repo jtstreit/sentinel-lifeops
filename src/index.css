@@ -1,1 +1,83 @@
 @import "tailwindcss";
+
+/*
+  Sentinel LifeOps design tokens.
+
+  A calmer dark theme aligned with CBT Sentinel: deep indigo-slate surfaces,
+  a soft healing teal as the primary, and a periwinkle accent reserved for
+  AI / insight moments. Semantic tokens below are the going-forward API for
+  refactored components; the legacy slate/cyan/amber/emerald/rose ramps are
+  remapped to the same palette so existing utility classes adopt the calm
+  look immediately, without rewriting every element.
+*/
+@theme {
+  /* --- Semantic tokens (prefer these in new / refactored components) --- */
+  --color-bg: #0f1320;
+  --color-surface: #161b2b;
+  --color-surface-alt: #1c2233;
+  --color-surface-raised: #232b40;
+  --color-input: #0c101b;
+
+  --color-line: #2b3349;
+  --color-line-subtle: #222a3c;
+  --color-line-strong: #3a4869;
+
+  --color-ink: #f2f5fb;
+  --color-ink-muted: #aeb8cb;
+  --color-ink-faint: #7e8aa0;
+
+  --color-primary: #5cc2b1;
+  --color-primary-ink: #06241f;
+  --color-primary-soft: #143b36;
+  --color-accent: #8a9bf0;
+  --color-accent-soft: #1b2347;
+
+  --color-success: #56d08a;
+  --color-warn: #f4c152;
+  --color-danger: #f47b7b;
+
+  /* --- Legacy ramp remap: surfaces + text (slate) --- */
+  --color-slate-950: #0b0e17;
+  --color-slate-900: #161b2b;
+  --color-slate-800: #232b40;
+  --color-slate-700: #2b3349;
+  --color-slate-600: #3a4869;
+  --color-slate-500: #7e8aa0;
+  --color-slate-400: #aeb8cb;
+  --color-slate-300: #c3ccdb;
+  --color-slate-200: #dde3ee;
+  --color-slate-100: #eef1f7;
+  --color-slate-50: #f2f5fb;
+
+  /* --- cyan -> healing teal (brand / primary) --- */
+  --color-cyan-950: #0e2b27;
+  --color-cyan-400: #5cc2b1;
+  --color-cyan-300: #7fd0c2;
+  --color-cyan-200: #9bdbd0;
+  --color-cyan-100: #c2eee6;
+  --color-cyan-50: #e1f5ee;
+
+  /* --- amber -> warm gold (warnings / attention) --- */
+  --color-amber-950: #2a2208;
+  --color-amber-400: #f4c152;
+  --color-amber-300: #f6cf73;
+  --color-amber-200: #fbe3a6;
+  --color-amber-100: #fdeec8;
+  --color-amber-50: #fbf4e2;
+
+  /* --- emerald -> success green --- */
+  --color-emerald-950: #102a1d;
+  --color-emerald-700: #1d6b46;
+  --color-emerald-500: #3fb877;
+  --color-emerald-400: #56d08a;
+  --color-emerald-200: #bff3d3;
+  --color-emerald-50: #ecfaf1;
+
+  /* --- rose -> soft danger --- */
+  --color-rose-950: #2e1418;
+  --color-rose-500: #ef6464;
+  --color-rose-400: #f47b7b;
+  --color-rose-200: #fbd0d0;
+  --color-rose-100: #fde4e4;
+  --color-rose-50: #fcecec;
+}

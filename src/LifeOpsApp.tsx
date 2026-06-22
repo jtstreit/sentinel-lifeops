@@ -1234,8 +1234,8 @@ export default function LifeOpsApp() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0f1419] text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#111820]/95 pt-10 backdrop-blur">
+    <div className="min-h-screen bg-bg text-slate-100">
+      <header className="sticky top-0 z-30 border-b border-slate-800 bg-surface/95 pt-10 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-cyan-400/10 p-2 text-cyan-200">
@@ -1686,7 +1686,7 @@ export default function LifeOpsApp() {
         )}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-12 z-40 border-t border-slate-800 bg-[#111820]/95 px-3 py-2 backdrop-blur">
+      <nav className="fixed inset-x-0 bottom-12 z-40 border-t border-slate-800 bg-surface/95 px-3 py-2 backdrop-blur">
         <div className="mx-auto grid max-w-5xl grid-cols-5 gap-1 sm:gap-2">
           {([
             { key: "today", label: "Today", icon: Clock },
