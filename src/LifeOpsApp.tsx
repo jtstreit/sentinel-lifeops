@@ -174,15 +174,16 @@ function sourceIcon(source: SentinelEvent["source"]) {
   return Bell;
 }
 
-function primaryButtonClass(tone: "cyan" | "green" | "amber" | "slate" | "red" = "cyan") {
+function primaryButtonClass(tone: "cyan" | "ai" | "green" | "amber" | "slate" | "red" = "cyan") {
   const map = {
-    cyan: "bg-cyan-400 text-slate-950 hover:bg-cyan-300 border-cyan-300",
+    cyan: "bg-primary text-primary-ink hover:opacity-90 border-transparent",
+    ai: "bg-accent text-[#0a1030] hover:opacity-90 border-transparent",
     green: "bg-emerald-500 text-slate-950 hover:bg-emerald-400 border-emerald-400",
     amber: "bg-amber-400 text-slate-950 hover:bg-amber-300 border-amber-300",
-    slate: "bg-slate-800 text-slate-100 hover:bg-slate-700 border-slate-700",
+    slate: "bg-surface-raised text-ink hover:bg-slate-700 border-line",
     red: "bg-rose-500 text-white hover:bg-rose-400 border-rose-400"
   };
-  return `${map[tone]} border rounded-lg px-4 py-3 text-left font-bold transition-colors disabled:opacity-45 disabled:cursor-not-allowed`;
+  return `${map[tone]} border rounded-xl px-4 py-3 text-left font-semibold transition-colors disabled:opacity-45 disabled:cursor-not-allowed`;
 }
 
 function ActionButton({
@@ -196,7 +197,7 @@ function ActionButton({
   icon: React.ElementType;
   label: string;
   hint?: string;
-  tone?: "cyan" | "green" | "amber" | "slate" | "red";
+  tone?: "cyan" | "ai" | "green" | "amber" | "slate" | "red";
   disabled?: boolean;
   onClick: () => void;
 }) {
@@ -1242,7 +1243,7 @@ export default function LifeOpsApp() {
               <ShieldCheck className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-sm font-black tracking-wide text-white sm:text-base">SENTINEL LifeOps</h1>
+              <h1 className="text-sm font-extrabold tracking-wide text-ink sm:text-base">Sentinel LifeOps</h1>
               <p className="text-xs text-slate-400">Phone signals to one next task</p>
             </div>
           </div>
@@ -1317,7 +1318,7 @@ export default function LifeOpsApp() {
                 ) : (
                   <>
                     <ActionButton icon={RefreshCw} label="Refresh phone data" hint="Combs the last 24 hours where Android exposes history" onClick={() => syncTelemetryLogs(true)} />
-                    <ActionButton icon={Sparkles} label="Create suggestions" hint="Only uses actionable phone signals" tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
+                    <ActionButton icon={Sparkles} label="Create suggestions" hint="Only uses actionable phone signals" tone="ai" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
                     <ActionButton icon={Plus} label="Add task manually" hint="Backup when Android cannot expose the source" tone="slate" onClick={() => setShowAddTaskModal(true)} />
                   </>
                 )}
@@ -1701,8 +1702,8 @@ export default function LifeOpsApp() {
               <button
                 key={item.key}
                 onClick={() => setActiveTab(item.key)}
-                className={`flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-lg text-xs font-bold transition-colors ${
-                  active ? "bg-cyan-400 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                className={`flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-xl text-xs font-semibold transition-colors ${
+                  active ? "bg-primary text-primary-ink" : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                 }`}
               >
                 <Icon className="h-5 w-5" />
