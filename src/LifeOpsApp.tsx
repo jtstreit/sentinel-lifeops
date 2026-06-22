@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import type { ExecutiveTask, SentinelEvent, SlipAutopsy } from "./types";
 import { formatTo12Hour, generateReverseTimeline, minutesToTimeString } from "./cartographer";
+import { InfoCard, Panel, Pill, SectionIntro, StatTile } from "./components/ui";
 import {
   buildLocalRelevanceAudit,
   buildSmartSituations,
@@ -1277,34 +1278,25 @@ export default function LifeOpsApp() {
           <div className="space-y-5">
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-                <div className="max-w-2xl">
-                  <p className="text-sm font-bold text-cyan-200">What should I do now?</p>
-                  {activeTask ? (
-                    <>
-                      <h2 className="mt-2 text-2xl font-black text-white">{activeTask.title}</h2>
-                      <p className="mt-3 text-base leading-relaxed text-slate-300">{nextStep?.title || activeTask.nextPhysicalAction}</p>
-                    </>
-                  ) : visibleSuggestionTasks.length > 0 ? (
-                    <>
-                      <h2 className="mt-2 text-2xl font-black text-white">Pick one suggested task</h2>
-                      <p className="mt-3 text-base leading-relaxed text-slate-300">There are {visibleSuggestionTasks.length} smart suggestions from related phone signals. Choose one so the app has something concrete to guide.</p>
-                    </>
-                  ) : (
-                    <>
-                      <h2 className="mt-2 text-2xl font-black text-white">No current task yet</h2>
-                      <p className="mt-3 text-base leading-relaxed text-slate-300">Refresh phone data. If a message, visible app text, missed call, calendar event, or deadline has a real action in it, Sentinel will offer a task card.</p>
-                    </>
-                  )}
-                </div>
+                <SectionIntro
+                  kicker="What should I do now?"
+                  title={
+                    activeTask
+                      ? activeTask.title
+                      : visibleSuggestionTasks.length > 0
+                        ? "Pick one suggested task"
+                        : "No current task yet"
+                  }
+                >
+                  {activeTask
+                    ? nextStep?.title || activeTask.nextPhysicalAction
+                    : visibleSuggestionTasks.length > 0
+                      ? `There are ${visibleSuggestionTasks.length} smart suggestions from related phone signals. Choose one so the app has something concrete to guide.`
+                      : "Refresh phone data. If a message, visible app text, missed call, calendar event, or deadline has a real action in it, Sentinel will offer a task card."}
+                </SectionIntro>
                 <div className="grid min-w-0 grid-cols-2 gap-3 lg:w-72">
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                    <p className="text-xs font-bold text-slate-500">Task signals</p>
-                    <p className="mt-1 text-3xl font-black text-cyan-200">{taskReadySignals.length}</p>
-                  </div>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                    <p className="text-xs font-bold text-slate-500">Last pull</p>
-                    <p className="mt-1 text-lg font-black text-white">{formatRelativeTime(lastSignalTime)}</p>
-                  </div>
+                  <StatTile label="Task signals" value={taskReadySignals.length} accent />
+                  <StatTile label="Last pull" value={formatRelativeTime(lastSignalTime)} />
                 </div>
               </div>
 
@@ -1339,27 +1331,24 @@ export default function LifeOpsApp() {
             )}
 
             <section className="grid gap-4 lg:grid-cols-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                <h3 className="flex items-center gap-2 text-base font-bold text-white"><Smartphone className="h-5 w-5 text-cyan-200" /> Phone data</h3>
-                <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                  <div><dt className="text-slate-500">SMS</dt><dd className="text-xl font-black">{telemetryCounts.sms || 0}</dd></div>
-                  <div><dt className="text-slate-500">Calendar</dt><dd className="text-xl font-black">{telemetryCounts.calendar || 0}</dd></div>
-                  <div><dt className="text-slate-500">Notifications</dt><dd className="text-xl font-black">{telemetryCounts.notification || 0}</dd></div>
-                  <div><dt className="text-slate-500">Screen text</dt><dd className="text-xl font-black">{telemetryCounts.screen_text || 0}</dd></div>
+              <InfoCard icon={Smartphone} title="Phone data">
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div><dt className="text-ink-faint">SMS</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.sms || 0}</dd></div>
+                  <div><dt className="text-ink-faint">Calendar</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.calendar || 0}</dd></div>
+                  <div><dt className="text-ink-faint">Notifications</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.notification || 0}</dd></div>
+                  <div><dt className="text-ink-faint">Screen text</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.screen_text || 0}</dd></div>
                 </dl>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                <h3 className="flex items-center gap-2 text-base font-bold text-white"><ListChecks className="h-5 w-5 text-emerald-200" /> Suggestions</h3>
-                <p className="mt-4 text-3xl font-black text-white">{visibleSuggestionTasks.length}</p>
-                <p className="mt-2 text-sm text-slate-400">Suggested task cards waiting for a decision.</p>
-                <button onClick={() => setActiveTab("suggestions")} className="mt-4 text-sm font-bold text-cyan-200 hover:text-cyan-100">Open suggested tasks</button>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                <h3 className="flex items-center gap-2 text-base font-bold text-white"><Settings className="h-5 w-5 text-amber-200" /> Phone access</h3>
-                <p className="mt-4 text-3xl font-black text-white">{readyPermissionCount}/4</p>
-                <p className="mt-2 text-sm text-slate-400">Access groups ready on Android.</p>
-                <button onClick={() => setActiveTab("access")} className="mt-4 text-sm font-bold text-cyan-200 hover:text-cyan-100">Check access</button>
-              </div>
+              </InfoCard>
+              <InfoCard icon={ListChecks} title="Suggestions" iconClass="text-accent">
+                <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
+                <p className="mt-2 text-sm text-ink-muted">Suggested task cards waiting for a decision.</p>
+                <button onClick={() => setActiveTab("suggestions")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Open suggested tasks</button>
+              </InfoCard>
+              <InfoCard icon={Settings} title="Phone access" iconClass="text-amber-300">
+                <p className="text-3xl font-bold text-ink">{readyPermissionCount}/4</p>
+                <p className="mt-2 text-sm text-ink-muted">Access groups ready on Android.</p>
+                <button onClick={() => setActiveTab("access")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Check access</button>
+              </InfoCard>
             </section>
           </div>
         )}
