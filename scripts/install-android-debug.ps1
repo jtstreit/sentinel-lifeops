@@ -7,8 +7,9 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = Split-Path -Parent $repoRoot
 $adbCandidates = @(
+  "C:\Users\46743\platform-tools\adb.exe",
   (Join-Path $workspaceRoot ".tools\android-sdk\platform-tools\adb.exe"),
-  (Join-Path $workspaceRoot ".tools\platform-tools\adb.exe")
+  "C:\Users\46743\OneDrive - Monarch\Documents\google ai studio apps\.tools\android-sdk\platform-tools\adb.exe"
 )
 $adb = $adbCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $apk = Join-Path $repoRoot "android-lifeops\app\build\outputs\apk\debug\app-debug.apk"

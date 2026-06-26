@@ -2,7 +2,9 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = Split-Path -Parent $repoRoot
-$toolRoot = Join-Path $workspaceRoot ".tools"
+# Android build toolchain lives in the OneDrive ".tools" folder (shared with CBT Sentinel),
+# not under the user home. Allow override via SENTINEL_TOOLROOT.
+$toolRoot = if ($env:SENTINEL_TOOLROOT) { $env:SENTINEL_TOOLROOT } else { "C:\Users\46743\OneDrive - Monarch\Documents\google ai studio apps\.tools" }
 $javaHome = Join-Path $toolRoot "jdk"
 $androidHome = Join-Path $toolRoot "android-sdk"
 $gradleBat = Join-Path $toolRoot "gradle-8.10.2\bin\gradle.bat"
