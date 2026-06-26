@@ -503,15 +503,28 @@ function getModelRuntimeStatus() {
   return "configured_not_yet_verified";
 }
 
+// Constant-time string equality. Hashing both sides to a fixed-width digest
+// avoids leaking length and lets timingSafeEqual compare equal-length buffers.
+function constantTimeEquals(a: string, b: string): boolean {
+  const aHash = crypto.createHash("sha256").update(a).digest();
+  const bHash = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(aHash, bHash);
+}
+
 function requestHasValidIngestToken(req: express.Request): boolean {
   const configuredToken = process.env.SENTINEL_INGEST_TOKEN?.trim();
   if (!configuredToken) {
-    return true;
+    // Fail closed: an empty/unset token never grants access to a non-loopback
+    // caller. Loopback dev traffic may still pass so local tooling keeps working.
+    return isLoopbackRequest(req);
   }
 
   const headerToken = req.get("x-sentinel-ingest-token")?.trim();
   const bearerToken = req.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
-  return headerToken === configuredToken || bearerToken === configuredToken;
+  return (
+    (Boolean(headerToken) && constantTimeEquals(headerToken!, configuredToken)) ||
+    (Boolean(bearerToken) && constantTimeEquals(bearerToken!, configuredToken))
+  );
 }
 
 function isLoopbackRequest(req: express.Request): boolean {
@@ -523,15 +536,47 @@ function isLoopbackRequest(req: express.Request): boolean {
   return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remoteAddress);
 }
 
+// Run every disk record through sanitizeTelemetryPayload(rec, true) so the
+// in-memory store can only ever hold contract-valid logs. preserveClientFields
+// (true) keeps the on-disk id/timestamp instead of regenerating them. Records
+// whose sanitize result is an {error} object are dropped.
+function sanitizeLoadedTelemetryLogs(parsed: unknown): TelemetryLog[] {
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  const valid: TelemetryLog[] = [];
+  for (const rec of parsed.slice(0, 500)) {
+    const sanitized = sanitizeTelemetryPayload(rec, true);
+    if ("error" in sanitized) {
+      continue;
+    }
+    valid.push(sanitized);
+  }
+  return valid;
+}
+
 function loadTelemetryLogs(): TelemetryLog[] {
   try {
     if (!fs.existsSync(TELEMETRY_STORE_PATH)) {
       return [];
     }
     const parsed = JSON.parse(fs.readFileSync(TELEMETRY_STORE_PATH, "utf8"));
-    return Array.isArray(parsed) ? parsed.slice(0, 500) : [];
+    return sanitizeLoadedTelemetryLogs(parsed);
   } catch (err) {
     console.warn(`Could not load Sentinel telemetry store: ${getErrorMessage(err)}`);
+    // Main file is unreadable/corrupt — fall back to the last good backup
+    // before giving up, so a crash mid-write does not lose all telemetry.
+    try {
+      const backupPath = `${TELEMETRY_STORE_PATH}.bak`;
+      if (fs.existsSync(backupPath)) {
+        const parsed = JSON.parse(fs.readFileSync(backupPath, "utf8"));
+        const recovered = sanitizeLoadedTelemetryLogs(parsed);
+        console.warn(`Recovered ${recovered.length} telemetry record(s) from backup store.`);
+        return recovered;
+      }
+    } catch (backupErr) {
+      console.warn(`Could not load Sentinel telemetry backup store: ${getErrorMessage(backupErr)}`);
+    }
     return [];
   }
 }
@@ -539,7 +584,16 @@ function loadTelemetryLogs(): TelemetryLog[] {
 function persistTelemetryLogs() {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(TELEMETRY_STORE_PATH, JSON.stringify(globalTelemetryLogs.slice(0, 500), null, 2));
+    // Atomic write: stage to a temp file then rename into place (atomic on the
+    // same volume). Back up the current good file first so loadTelemetryLogs can
+    // recover from it if a crash interrupts the write.
+    const tmpPath = `${TELEMETRY_STORE_PATH}.tmp`;
+    const backupPath = `${TELEMETRY_STORE_PATH}.bak`;
+    fs.writeFileSync(tmpPath, JSON.stringify(globalTelemetryLogs.slice(0, 500), null, 2));
+    if (fs.existsSync(TELEMETRY_STORE_PATH)) {
+      fs.copyFileSync(TELEMETRY_STORE_PATH, backupPath);
+    }
+    fs.renameSync(tmpPath, TELEMETRY_STORE_PATH);
   } catch (err) {
     console.warn(`Could not persist Sentinel telemetry store: ${getErrorMessage(err)}`);
   }
@@ -963,9 +1017,23 @@ app.post("/api/extract-tasks", async (req, res) => {
 });
 
 async function start() {
+  if (!process.env.SENTINEL_INGEST_TOKEN?.trim()) {
+    console.warn(
+      "[sentinel-lifeops] SECURITY: SENTINEL_INGEST_TOKEN is empty/unset — token-protected routes will reject all non-loopback callers. Set SENTINEL_INGEST_TOKEN to allow remote ingest.",
+    );
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // Lock down the Vite /@fs route so the dev server cannot serve secrets
+        // or TypeScript source over the network.
+        fs: {
+          strict: true,
+          deny: ["**/.env", "**/.env.*", "**/*.ts", "**/*.pem", "**/*.key"],
+        },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -990,4 +1058,18 @@ async function start() {
   });
 }
 
-start();
+process.on("unhandledRejection", (reason) => {
+  console.error("[sentinel-lifeops] unhandledRejection", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[sentinel-lifeops] uncaughtException", err);
+  // Do not swallow-and-continue: an unknown-state process can corrupt the
+  // telemetry store. Exit and let an external supervisor restart cleanly.
+  process.exit(1);
+});
+
+start().catch((err) => {
+  console.error("[sentinel-lifeops] fatal start error", err);
+  process.exit(1);
+});

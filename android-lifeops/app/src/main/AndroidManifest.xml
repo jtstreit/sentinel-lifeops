@@ -34,7 +34,7 @@
 
         <receiver
             android:name=".TelemetryExportReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="com.jackson.sentinellifeops.EXPORT_TELEMETRY" />
             </intent-filter>

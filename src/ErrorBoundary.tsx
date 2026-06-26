@@ -10,6 +10,8 @@ const SENTINEL_STORAGE_KEYS = [
   "sentinel-lifeops:sentinelFeed",
   "sentinel-lifeops:slipAutopsies",
   "sentinel-lifeops:schemaVersion",
+  "sentinel-lifeops:signalFeedback",
+  "sentinel-lifeops:suppressedSignalIds",
 ];
 
 export default class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBoundaryState> {

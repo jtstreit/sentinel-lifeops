@@ -41,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -54,11 +55,17 @@ public class SentinelBridge {
     private static final long REFRESH_LOOKBACK_MS = 1000L * 60L * 60L * 24L;
     private static final long CALENDAR_LOOKAHEAD_MS = 1000L * 60L * 60L * 24L * 14L;
     private static final long EXPIRED_SIGNAL_GRACE_MS = 1000L * 60L * 90L;
+    // Mirrors MainActivity.LIFEOPS_API_HOST. Keep the two in sync.
+    private static final String LIFEOPS_API_HOST = "sentinel-lifeops-api.onrender.com";
     private static final String PREFS = "sentinel_lifeops_bridge";
     private static final String CUSTOM_LOGS = "custom_logs";
     private static final SimpleDateFormat TIME_FORMAT = new SimpleDateFormat("hh:mm a", Locale.US);
     private static final SimpleDateFormat TARGET_TIME_FORMAT = new SimpleDateFormat("HH:mm", Locale.US);
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+
+    // Monotonic counter so two logs whose (title+content) share a hashCode still get
+    // distinct ids and are not silently de-duplicated by the ingest store.
+    private static final AtomicLong LOG_ID_SEQUENCE = new AtomicLong(0L);
 
     private final Context context;
     private final MainActivity activity;
@@ -176,6 +183,11 @@ public class SentinelBridge {
                 .put("packageName", context.getPackageName());
 
         String endpoint = cleanBaseUrl + "/api/telemetry/bulk";
+        if (!isAllowedExportTarget(endpoint)) {
+            return new JSONObject()
+                    .put("success", false)
+                    .put("error", "blocked target");
+        }
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
         try {
             connection.setRequestMethod("POST");
@@ -365,13 +377,20 @@ public class SentinelBridge {
                     Telephony.Sms.DATE + " DESC"
             );
             int count = 0;
+            int attempted = 0;
             while (cursor != null && cursor.moveToNext() && count < MAX_SMS_LOGS && logs.length() < MAX_LOGS) {
-                long id = cursor.getLong(0);
-                String address = cursor.getString(1);
-                String body = cursor.getString(2);
-                long date = cursor.getLong(3);
-                logs.put(createLog("sms", "SMS from " + labelForNumber(address), body, date).put("id", "android-sms-" + id));
-                count++;
+                // AND-10: isolate each row so one malformed SMS is skipped, not the whole batch.
+                attempted++;
+                try {
+                    long id = cursor.getLong(0);
+                    String address = cursor.getString(1);
+                    String body = cursor.getString(2);
+                    long date = cursor.getLong(3);
+                    logs.put(createLog("sms", "SMS from " + labelForNumber(address), body, date).put("id", "android-sms-" + id));
+                    count++;
+                } catch (Exception perRow) {
+                    // Skip this single SMS row and keep reading the cursor.
+                }
             }
         } catch (Exception ignored) {
         } finally {
@@ -391,15 +410,22 @@ public class SentinelBridge {
                     CallLog.Calls.DATE + " DESC"
             );
             int count = 0;
+            int attempted = 0;
             while (cursor != null && cursor.moveToNext() && count < MAX_CALL_LOGS && logs.length() < MAX_LOGS) {
-                long id = cursor.getLong(0);
-                String number = cursor.getString(1);
-                int type = cursor.getInt(2);
-                long date = cursor.getLong(3);
-                long duration = cursor.getLong(4);
-                String callType = type == CallLog.Calls.INCOMING_TYPE ? "Incoming" : type == CallLog.Calls.OUTGOING_TYPE ? "Outgoing" : "Missed";
-                logs.put(createLog("notification", callType + " call: " + labelForNumber(number), "Duration: " + duration + " seconds", date).put("id", "android-call-" + id));
-                count++;
+                // AND-10: isolate each row so one malformed call record is skipped, not the whole batch.
+                attempted++;
+                try {
+                    long id = cursor.getLong(0);
+                    String number = cursor.getString(1);
+                    int type = cursor.getInt(2);
+                    long date = cursor.getLong(3);
+                    long duration = cursor.getLong(4);
+                    String callType = type == CallLog.Calls.INCOMING_TYPE ? "Incoming" : type == CallLog.Calls.OUTGOING_TYPE ? "Outgoing" : "Missed";
+                    logs.put(createLog("notification", callType + " call: " + labelForNumber(number), "Duration: " + duration + " seconds", date).put("id", "android-call-" + id));
+                    count++;
+                } catch (Exception perRow) {
+                    // Skip this single call-log row and keep reading the cursor.
+                }
             }
         } catch (Exception ignored) {
         } finally {
@@ -656,6 +682,7 @@ public class SentinelBridge {
     private int relevanceScore(String source, String title, String content, String packageName, long capturedAt) {
         String text = (safe(title, "") + " " + safe(content, "")).toLowerCase(Locale.US);
         if (isPlaceholderSignal(text)) return 0;
+        if (isClinicalContent(text)) return 0;
         if (!"calendar".equals(source) && isNoiseSignal(text)) return 0;
         if ("location".equals(source)) return 0;
         if (isExpiredSignal(source, title, content, capturedAt)) return 0;
@@ -867,6 +894,15 @@ public class SentinelBridge {
                 .find();
     }
 
+    // Mirrors src/lifeopsRules.ts isClinicalContent. PHI/work guard: Credible EHR +
+    // Monarch + clinical-program markers. Deliberately narrow so ordinary signals still
+    // flow. This only zeroes the task-suggestion SCORE; it does NOT affect capture/export.
+    private boolean isClinicalContent(String text) {
+        return Pattern.compile("\\bcrediblebh\\b|\\bcbh3\\b|\\bcredible\\b|\\bmonarch\\b|\\bnctracks\\b|\\bnc-?topps\\b|\\bmedicaid\\b|\\biihs?\\b|\\bsign and submit\\b|\\bsvc note\\b|\\bservice note\\b", Pattern.CASE_INSENSITIVE)
+                .matcher(text == null ? "" : text)
+                .find();
+    }
+
     private boolean isDistractionSignal(String text) {
         return Pattern.compile("\\b(instagram|reddit|tiktok|youtube|facebook|netflix|reels|shorts|scroll|scrolling)\\b", Pattern.CASE_INSENSITIVE)
                 .matcher(text == null ? "" : text)
@@ -999,7 +1035,7 @@ public class SentinelBridge {
         String safeTitle = safe(title, "Phone signal");
         String safeContent = safe(content, "");
         JSONObject log = new JSONObject();
-        log.put("id", "android-log-" + actualTime + "-" + Math.abs((safeTitle + safeContent).hashCode()));
+        log.put("id", "android-log-" + actualTime + "-" + Math.abs((safeTitle + safeContent).hashCode()) + "-" + LOG_ID_SEQUENCE.incrementAndGet());
         log.put("timestamp", TIME_FORMAT.format(new Date(actualTime)));
         log.put("capturedAtEpochMillis", actualTime);
         log.put("source", source);
@@ -1090,6 +1126,41 @@ public class SentinelBridge {
             clean = clean.substring(0, clean.length() - 1);
         }
         return clean;
+    }
+
+    // Defense-in-depth: validate the resolved export destination against the same
+    // host-allowlist policy MainActivity uses for WebView network requests
+    // (LIFEOPS_API_HOST over https + isLocalNetworkHost). Local hosts are permitted
+    // over http OR https because the export script (scripts/export-android-telemetry.ps1)
+    // rewrites the target to https://127.0.0.1:<port> when adb reverse is active.
+    // If we cannot parse/classify the target, ERR ON THE SIDE OF ALLOWING so a real
+    // export is never silently dropped; the caller logs a warning instead.
+    private boolean isAllowedExportTarget(String endpoint) {
+        try {
+            URL url = new URL(endpoint);
+            String scheme = url.getProtocol() == null ? "" : url.getProtocol().toLowerCase(Locale.US);
+            String host = url.getHost() == null ? "" : url.getHost().toLowerCase(Locale.US);
+            if ("https".equals(scheme) && LIFEOPS_API_HOST.equals(host)) {
+                return true;
+            }
+            if (("http".equals(scheme) || "https".equals(scheme)) && isLocalNetworkHost(host)) {
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            // Unable to classify the target: do not risk breaking a legitimate export.
+            return true;
+        }
+    }
+
+    // Mirrors MainActivity.isLocalNetworkHost exactly: loopback + RFC1918 private ranges
+    // (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0-172.31.255.255).
+    private boolean isLocalNetworkHost(String host) {
+        return "localhost".equals(host)
+                || "127.0.0.1".equals(host)
+                || host.startsWith("10.")
+                || host.startsWith("192.168.")
+                || host.matches("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*");
     }
 
     private String readResponseBody(HttpURLConnection connection, int status) {

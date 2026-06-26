@@ -354,6 +354,7 @@ export default function LifeOpsApp() {
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
   const [showStuckPanel, setShowStuckPanel] = useState(false);
   const [showDelayModal, setShowDelayModal] = useState(false);
+  const [showBridgeDiagnostics, setShowBridgeDiagnostics] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDuration, setNewTaskDuration] = useState(15);
   const [newTaskNextPhysical, setNewTaskNextPhysical] = useState("");
@@ -369,6 +370,7 @@ export default function LifeOpsApp() {
   const [slipHiddenSteps, setSlipHiddenSteps] = useState("");
   const [slipFix, setSlipFix] = useState("");
   const lastAutoExtractKeyRef = useRef("");
+  const lastTimelineNoticeKeyRef = useRef("");
 
   const activeTask = activeTasks.find(task => !task.isCompleted) || null;
   const nextStep = activeTask?.steps.find(step => step.state === "current") || activeTask?.steps.find(step => step.state === "pending") || null;
@@ -548,9 +550,17 @@ export default function LifeOpsApp() {
   useEffect(() => {
     if (!activeTask?.targetTime || typeof timeline.hardLeaveMinutes !== "number" || typeof timeline.prepStartMinutes !== "number") return;
     if (currentMinutes >= timeline.hardLeaveMinutes && currentMinutes < timeline.hardLeaveMinutes + 15 && !activeTask.isCompleted) {
-      setNotice({ text: `Leave time has passed. Next action: ${activeTask.nextPhysicalAction}`, severity: "error" });
+      const windowKey = `${activeTask.id}:leave:${timeline.hardLeaveMinutes}`;
+      if (lastTimelineNoticeKeyRef.current !== windowKey) {
+        lastTimelineNoticeKeyRef.current = windowKey;
+        setNotice({ text: `Leave time has passed. Next action: ${activeTask.nextPhysicalAction}`, severity: "error" });
+      }
     } else if (currentMinutes >= timeline.prepStartMinutes && currentMinutes < timeline.prepStartMinutes + 15 && !activeTask.isCompleted) {
-      setNotice({ text: `Prep should start now. Next action: ${activeTask.nextPhysicalAction}`, severity: "warning" });
+      const windowKey = `${activeTask.id}:prep:${timeline.prepStartMinutes}`;
+      if (lastTimelineNoticeKeyRef.current !== windowKey) {
+        lastTimelineNoticeKeyRef.current = windowKey;
+        setNotice({ text: `Prep should start now. Next action: ${activeTask.nextPhysicalAction}`, severity: "warning" });
+      }
     }
   }, [currentMinutes, activeTask, timeline.hardLeaveMinutes, timeline.prepStartMinutes]);
 
@@ -1651,9 +1661,42 @@ export default function LifeOpsApp() {
               <h3 className="text-lg font-bold text-ink">Bridge status</h3>
               <p className="mt-2 text-sm text-slate-400">{isAndroidBridgeAvailable ? "The installed APK is connected to the native Android bridge." : "This browser preview cannot read phone data directly. Install/open the Android app for live capture."}</p>
               {androidBridgeStatus && (
-                <pre className="mt-4 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-950 p-4 text-xs leading-relaxed text-slate-300">
-                  {JSON.stringify(androidBridgeStatus, null, 2)}
-                </pre>
+                <>
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    {([
+                      { key: "sms", label: "SMS" },
+                      { key: "callLog", label: "Call log" },
+                      { key: "contacts", label: "Contacts" },
+                      { key: "calendar", label: "Calendar" },
+                      { key: "coarseLocation", label: "Location (coarse)" },
+                      { key: "fineLocation", label: "Location (fine)" },
+                      { key: "usageAccess", label: "App usage access" },
+                      { key: "notificationListener", label: "Notification access" },
+                      { key: "accessibility", label: "Screen text access" }
+                    ] as const)
+                      .filter(flag => flag.key in (androidBridgeStatus as Record<string, unknown>))
+                      .map(flag => {
+                        const granted = Boolean((androidBridgeStatus as Record<string, unknown>)[flag.key]);
+                        return (
+                          <div key={flag.key} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                            <span className="text-slate-300">{flag.label}</span>
+                            <Pill tone={granted ? "success" : "warn"}>{granted ? "Granted" : "Off"}</Pill>
+                          </div>
+                        );
+                      })}
+                  </div>
+                  <button
+                    onClick={() => setShowBridgeDiagnostics(prev => !prev)}
+                    className="mt-3 text-xs font-semibold text-cyan-300 hover:text-cyan-200"
+                  >
+                    {showBridgeDiagnostics ? "Hide diagnostics" : "Show diagnostics"}
+                  </button>
+                  {showBridgeDiagnostics && (
+                    <pre className="mt-3 max-h-64 overflow-auto rounded-lg border border-slate-800 bg-slate-950 p-4 text-xs leading-relaxed text-slate-300">
+                      {JSON.stringify(androidBridgeStatus, null, 2)}
+                    </pre>
+                  )}
+                </>
               )}
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <ActionButton icon={Settings} label="Open app settings" hint="Android app permissions page" tone="slate" disabled={!isAndroidBridgeAvailable} onClick={() => androidBridge?.openAppSettings()} />
