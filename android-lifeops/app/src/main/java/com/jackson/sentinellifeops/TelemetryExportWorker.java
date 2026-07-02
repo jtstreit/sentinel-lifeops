@@ -32,6 +32,7 @@ public class TelemetryExportWorker extends Worker {
         String token = SentinelBridge.savedExportToken(context);
         if (baseUrl == null || baseUrl.trim().isEmpty()) {
             Log.i(TAG, "No export config saved yet (open the app once so an export succeeds); skipping.");
+            SentinelBridge.recordWorkerRun(context, "skipped-no-config");
             return Result.success();
         }
 
@@ -40,16 +41,20 @@ public class TelemetryExportWorker extends Worker {
             boolean success = result.optBoolean("success", false);
             Log.i(TAG, "Background telemetry export: " + result);
             if (success) {
+                SentinelBridge.recordWorkerRun(context, "success");
                 return Result.success();
             }
             // "No telemetry logs available" is not a transient failure — nothing to send.
             String error = result.optString("error", "");
             if (error.contains("No telemetry logs available")) {
+                SentinelBridge.recordWorkerRun(context, "nothing-to-send");
                 return Result.success();
             }
+            SentinelBridge.recordWorkerRun(context, "retry: " + error);
             return Result.retry();
         } catch (Exception e) {
             Log.w(TAG, "Background telemetry export failed", e);
+            SentinelBridge.recordWorkerRun(context, "retry: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
             return Result.retry();
         }
     }

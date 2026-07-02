@@ -8,6 +8,7 @@ import android.app.usage.UsageStatsManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -59,8 +60,15 @@ public class SentinelBridge {
     private static final String LIFEOPS_API_HOST = "sentinel-lifeops-api.onrender.com";
     private static final String PREFS = "sentinel_lifeops_bridge";
     private static final String CUSTOM_LOGS = "custom_logs";
+    private static final int MAX_CUSTOM_LOGS = 200;
     private static final String EXPORT_BASE_URL_PREF = "export_base_url";
     private static final String EXPORT_TOKEN_PREF = "export_token";
+    private static final String LAST_EXPORT_AT_PREF = "last_export_at";
+    private static final String LAST_EXPORT_STATUS_PREF = "last_export_status";
+    private static final String LAST_EXPORT_COUNT_PREF = "last_export_count";
+    private static final String LAST_EXPORT_ERROR_PREF = "last_export_error";
+    private static final String LAST_WORKER_RUN_AT_PREF = "last_worker_run_at";
+    private static final String LAST_WORKER_RESULT_PREF = "last_worker_result";
     private static final SimpleDateFormat TIME_FORMAT = new SimpleDateFormat("hh:mm a", Locale.US);
     private static final SimpleDateFormat TARGET_TIME_FORMAT = new SimpleDateFormat("HH:mm", Locale.US);
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
@@ -99,6 +107,18 @@ public class SentinelBridge {
             status.put("usageAccess", hasUsageAccess());
             status.put("notificationListener", isEnabledSetting("enabled_notification_listeners"));
             status.put("accessibility", isEnabledSetting(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES));
+            // Export/pipeline health (additive keys only; the web UI's flag-list renderer
+            // filters to known keys, so extending this JSON is safe).
+            SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            status.put("exportConfigSaved", !prefs.getString(EXPORT_BASE_URL_PREF, "").isEmpty());
+            long lastExportAt = prefs.getLong(LAST_EXPORT_AT_PREF, 0L);
+            if (lastExportAt > 0L) status.put("lastExportAt", lastExportAt);
+            status.put("lastExportStatus", prefs.getString(LAST_EXPORT_STATUS_PREF, ""));
+            status.put("lastExportCount", prefs.getInt(LAST_EXPORT_COUNT_PREF, 0));
+            status.put("lastExportError", prefs.getString(LAST_EXPORT_ERROR_PREF, ""));
+            long lastWorkerRunAt = prefs.getLong(LAST_WORKER_RUN_AT_PREF, 0L);
+            if (lastWorkerRunAt > 0L) status.put("lastWorkerRunAt", lastWorkerRunAt);
+            status.put("lastWorkerResult", prefs.getString(LAST_WORKER_RESULT_PREF, ""));
             status.put("timestamp", new Date().toString());
         } catch (Exception e) {
             return errorJson(e);
@@ -172,6 +192,7 @@ public class SentinelBridge {
         JSONArray logs = telemetry.optJSONArray("logs");
         int count = logs == null ? 0 : logs.length();
         if (count <= 0) {
+            recordExportStatus("empty", 0, "No telemetry logs available to export");
             return new JSONObject()
                     .put("success", false)
                     .put("error", "No telemetry logs available to export")
@@ -186,11 +207,18 @@ public class SentinelBridge {
 
         String endpoint = cleanBaseUrl + "/api/telemetry/bulk";
         if (!isAllowedExportTarget(endpoint)) {
+            recordExportStatus("error", count, "blocked target");
             return new JSONObject()
                     .put("success", false)
                     .put("error", "blocked target");
         }
-        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        HttpURLConnection connection;
+        try {
+            connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        } catch (Exception e) {
+            recordExportStatus("error", count, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            throw e;
+        }
         try {
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(10000);
@@ -219,12 +247,19 @@ public class SentinelBridge {
                     .put("body", responseBody);
             if (status < 200 || status >= 300) {
                 result.put("error", "LifeOps ingest returned HTTP " + status);
+                recordExportStatus("error", count, "LifeOps ingest returned HTTP " + status);
             } else {
                 // A proven-good destination + token: persist so TelemetryExportWorker can keep
                 // exporting in the background after the app is closed.
                 saveExportConfig(cleanBaseUrl, cleanToken);
+                recordExportStatus("success", count, "");
             }
             return result;
+        } catch (Exception e) {
+            // Network/IO failure mid-export: record it so the status JSON can show why the
+            // pipeline is stalled, then rethrow so callers keep their existing behavior.
+            recordExportStatus("error", count, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            throw e;
         } finally {
             connection.disconnect();
         }
@@ -234,16 +269,19 @@ public class SentinelBridge {
     public String addTelemetryJson(String payloadJson) {
         try {
             JSONObject payload = new JSONObject(payloadJson);
+            // Honor a caller-supplied capture time so back-dated manual entries keep
+            // their true timestamp; only stamp "now" when the payload has none.
+            long capturedAt = payload.optLong("capturedAtEpochMillis", 0L);
             JSONObject log = createLog(
                     payload.optString("source", "user_note"),
                     payload.optString("title", "Manual phone action"),
                     payload.optString("content", ""),
-                    System.currentTimeMillis()
+                    capturedAt > 0L ? capturedAt : System.currentTimeMillis()
             );
             JSONArray logs = getCustomLogs();
             JSONArray next = new JSONArray();
             next.put(log);
-            for (int i = 0; i < logs.length() && i < 40; i++) {
+            for (int i = 0; i < logs.length() && i < MAX_CUSTOM_LOGS - 1; i++) {
                 next.put(logs.getJSONObject(i));
             }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -479,7 +517,7 @@ public class SentinelBridge {
                 if (count >= MAX_USAGE_LOGS || logs.length() >= MAX_LOGS) break;
                 if (stat.getTotalTimeInForeground() <= 0) continue;
                 String label = labelForPackage(stat.getPackageName());
-                if (isIgnoredUsagePackage(stat.getPackageName(), label)) continue;
+                if (isIgnoredUsagePackageForCapture(stat.getPackageName(), label)) continue;
                 long minutes = Math.max(1, stat.getTotalTimeInForeground() / 60000L);
                 logs.put(createLog("app_usage", "App usage: " + label, minutes + " minutes foreground in the last 24 hours", stat.getLastTimeUsed())
                         .put("id", "android-usage-" + stat.getPackageName())
@@ -694,7 +732,7 @@ public class SentinelBridge {
         if (isExpiredSignal(source, title, content, capturedAt)) return 0;
         if (isMissedCallSignal(source, title, content)) return 4;
         if (isCallLogSignal(source, title, content)) return 1;
-        if ("app_usage".equals(source) && isIgnoredUsagePackage("", title + " " + content)) return 0;
+        if ("app_usage".equals(source) && isIgnoredUsagePackage(packageName, title + " " + content)) return 0;
         if ("screen_text".equals(source) && isIgnoredScreenTextPackage(packageName, title)) return 0;
         if ("app_usage".equals(source)) return isDistractionSignal(text) ? 2 : 0;
 
@@ -705,10 +743,19 @@ public class SentinelBridge {
             score += 2;
         }
         if (("sms".equals(source) || "notification".equals(source)) && hasActionLanguage(text)) score += 1;
-        if (containsAny(text, new String[]{" ad ", " sale ", " promo", "newsletter", "weather", "battery", "download", "updated", "playing", "screen time summary"})) {
+        if (isPromoNoiseSignal(text)) {
             score -= 2;
         }
         return Math.max(0, score);
+    }
+
+    // Mirrors the TS promo/noise penalty in lifeopsRules.ts scoreSignal exactly:
+    // word-boundary matching (so "ad"/"sale" hit at string edges too) and no
+    // weather/battery terms, which the isNoiseSignal gate already zeroes out.
+    private boolean isPromoNoiseSignal(String text) {
+        return Pattern.compile("\\b(ad|sale|promo|newsletter|download|updated|playing|screen time summary)\\b", Pattern.CASE_INSENSITIVE)
+                .matcher(text == null ? "" : text)
+                .find();
     }
 
     private String relevanceReason(String source, String title, String content, int score) {
@@ -723,14 +770,15 @@ public class SentinelBridge {
         String text = title + " " + content;
         if (isExpiredSignal(source, title, content, capturedAt)) return "Expired time/date. Kept as history, but it will not create a task suggestion.";
         if ("screen_text".equals(source) && isIgnoredScreenTextPackage(packageName, title)) return "System or Sentinel screen text. Kept out of task suggestions to avoid self-capture loops.";
-        if ("app_usage".equals(source) && isDistractionSignal(text)) return "Drift context only. It can warn while a task is active, but it will not create a fake task.";
+        if ("app_usage".equals(source) && isDistractionSignal(text)) return "Drift context only. It can warn you while a task is active, but it will not create a fake task.";
         if (isMissedCallSignal(source, title, content)) return "Missed call. This can become a return-call task.";
         if (isCallLogSignal(source, title, content)) return "Call history only. Incoming/outgoing calls are kept as context unless a real follow-up is visible.";
         if ("calendar".equals(source)) return "Calendar event. This can become a preparation task.";
-        if (score >= 5) return "High signal: action language, time cue, or calendar context.";
-        if (score >= 3) return "Relevant signal: usable for a task suggestion.";
-        if ("location".equals(source)) return "Context only: location does not create tasks by itself.";
-        return "Context only: no clear action or time cue detected.";
+        // Tier strings mirror lifeopsRules.ts signalReason so the same signal explains
+        // itself identically whether it was ranked on the phone or the desktop.
+        if (score >= 5) return "Actionable signal with a request, time cue, or commitment.";
+        if (score >= 3) return "Actionable signal. It can become a task suggestion.";
+        return "Context only. No concrete request, deadline, or commitment detected.";
     }
 
     private boolean hasActionLanguage(String text) {
@@ -915,7 +963,19 @@ public class SentinelBridge {
                 .find();
     }
 
+    // SCORING-side mirror of lifeopsRules.ts isSystemAppUsageSignal (includes the bare
+    // word "sentinel", like the TS source of truth). Only zeroes relevance scores.
     private boolean isIgnoredUsagePackage(String packageName, String label) {
+        String text = (safe(packageName, "") + " " + safe(label, "")).toLowerCase(Locale.US);
+        return Pattern.compile("\\b(launcher|systemui|settings|permissioncontroller|webview|sentinel|sentinellifeops|keyboard|inputmethod)\\b|^android\\.|com\\.android\\.", Pattern.CASE_INSENSITIVE)
+                .matcher(text)
+                .find();
+    }
+
+    // CAPTURE-side skip list used by appendUsageLogs. Deliberately kept at the original,
+    // narrower pattern (no bare "sentinel"): this method controls what gets captured and
+    // exported, so it must never be broadened (telemetry hard rule).
+    private boolean isIgnoredUsagePackageForCapture(String packageName, String label) {
         String text = (safe(packageName, "") + " " + safe(label, "")).toLowerCase(Locale.US);
         return Pattern.compile("\\b(launcher|systemui|settings|permissioncontroller|webview|sentinellifeops|keyboard|inputmethod)\\b|^android\\.|com\\.android\\.", Pattern.CASE_INSENSITIVE)
                 .matcher(text)
@@ -1013,14 +1073,6 @@ public class SentinelBridge {
         }
 
         return null;
-    }
-
-    private boolean containsAny(String text, String[] needles) {
-        String haystack = text == null ? "" : text.toLowerCase(Locale.US);
-        for (String needle : needles) {
-            if (haystack.contains(needle)) return true;
-        }
-        return false;
     }
 
     private String cleanFragment(String value, int max) {
@@ -1135,6 +1187,38 @@ public class SentinelBridge {
                     .apply();
         } catch (Exception ignored) {
             // Config persistence is best-effort; never let it fail an export.
+        }
+    }
+
+    // Pipeline observability: persist the outcome of every export attempt so
+    // getBridgeStatusJson can answer "is telemetry actually reaching CBT Sentinel?".
+    // Foreground and worker exports share this path via exportTelemetrySnapshot.
+    private void recordExportStatus(String status, int count, String error) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong(LAST_EXPORT_AT_PREF, System.currentTimeMillis())
+                    .putString(LAST_EXPORT_STATUS_PREF, status == null ? "" : status)
+                    .putInt(LAST_EXPORT_COUNT_PREF, count)
+                    .putString(LAST_EXPORT_ERROR_PREF, error == null ? "" : error)
+                    .apply();
+        } catch (Exception ignored) {
+            // Status persistence is best-effort; never let it fail an export.
+        }
+    }
+
+    // Called by TelemetryExportWorker so the UI can distinguish "worker never ran"
+    // from "worker ran, nothing to send".
+    static void recordWorkerRun(Context context, String result) {
+        try {
+            context.getApplicationContext()
+                    .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong(LAST_WORKER_RUN_AT_PREF, System.currentTimeMillis())
+                    .putString(LAST_WORKER_RESULT_PREF, result == null ? "" : result)
+                    .apply();
+        } catch (Exception ignored) {
+            // Status persistence is best-effort; never let it fail the worker.
         }
     }
 
