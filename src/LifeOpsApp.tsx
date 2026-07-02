@@ -348,7 +348,10 @@ export default function LifeOpsApp() {
   const [isCheckingRelevance, setIsCheckingRelevance] = useState(false);
   const [askQuestion, setAskQuestion] = useState("");
   const [askAnswer, setAskAnswer] = useState("");
+  const [askEngine, setAskEngine] = useState<RelevanceAudit["engine"] | null>(null);
   const [isAsking, setIsAsking] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [serverHealth, setServerHealth] = useState<{ modelProvider?: string; modelRuntimeStatus?: string; claudeLastError?: string | null } | null>(null);
   const [androidBridgeStatus, setAndroidBridgeStatus] = useState<Record<string, any> | null>(null);
   const [notice, setNotice] = useState<Notice | null>({ text: "Ready. Refresh phone data, then pick one real task when a useful signal appears.", severity: "info" });
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
@@ -360,9 +363,10 @@ export default function LifeOpsApp() {
   const [newTaskNextPhysical, setNewTaskNextPhysical] = useState("");
   const [newTaskTargetTime, setNewTaskTargetTime] = useState("");
   const [newStepsInput, setNewStepsInput] = useState("");
-  const [manualSignalSource, setManualSignalSource] = useState<SentinelEvent["source"]>("sms");
+  const [manualSignalSource, setManualSignalSource] = useState<SentinelEvent["source"]>("user_note");
   const [manualSignalTitle, setManualSignalTitle] = useState("");
   const [manualSignalContent, setManualSignalContent] = useState("");
+  const [quickNoteText, setQuickNoteText] = useState("");
   const [taskTargetOverrides, setTaskTargetOverrides] = useState<Record<string, string>>({});
   const [slipWhat, setSlipWhat] = useState("");
   const [slipExpected, setSlipExpected] = useState(15);
@@ -475,6 +479,7 @@ export default function LifeOpsApp() {
   }, [androidBridge, askApiBase, canUseLifeOpsServer, ingestToken]);
 
   const syncTelemetryLogs = useCallback(async (forceRefresh = false) => {
+    setIsSyncing(true);
     try {
       let data: { logs?: SentinelEvent[]; lookbackHours?: number; historyCoverage?: string } | null = null;
       if (androidBridge) {
@@ -494,7 +499,7 @@ export default function LifeOpsApp() {
       }
 
       if (!data?.logs || !Array.isArray(data.logs)) {
-        if (forceRefresh) setNotice({ text: "No phone data came back from the bridge yet. Check Phone Access.", severity: "warning" });
+        if (forceRefresh) setNotice({ text: "No phone data came back from the bridge yet. Check Access.", severity: "warning" });
         return;
       }
 
@@ -507,7 +512,8 @@ export default function LifeOpsApp() {
           const actionable = taskSignals(next).length;
           const scopeLabel = data.lookbackHours ? ` from a ${data.lookbackHours}-hour scan` : "";
           const coverageLabel = data.historyCoverage ? ` ${data.historyCoverage}` : "";
-          setNotice({
+          // Periodic sync messages must never clobber an unacknowledged error.
+          setNotice(prev => (!forceRefresh && prev?.severity === "error") ? prev : {
             text: `${forceRefresh ? "Refreshed" : "Added"} ${newCount || incoming.length} phone signal${(newCount || incoming.length) === 1 ? "" : "s"}${scopeLabel}. ${actionable} can become task suggestions.${coverageLabel}${exportLabel}`,
             severity: actionable > 0 ? "info" : "warning"
           });
@@ -517,7 +523,9 @@ export default function LifeOpsApp() {
       refreshAndroidStatus();
     } catch (err) {
       console.warn("Telemetry sync failed:", err);
-      if (forceRefresh) setNotice({ text: "Phone data refresh failed. Open Phone Access and check the bridge permissions.", severity: "error" });
+      if (forceRefresh) setNotice({ text: "Phone data refresh failed. Open Access and check the bridge permissions.", severity: "error" });
+    } finally {
+      setIsSyncing(false);
     }
   }, [androidBridge, ingestToken, pushTelemetryExport, refreshAndroidStatus, suppressedSignalIds]);
 
@@ -527,6 +535,32 @@ export default function LifeOpsApp() {
     const interval = window.setInterval(tick, 30000);
     return () => window.clearInterval(interval);
   }, []);
+
+  // Routine info notices dismiss themselves; warnings and errors stay until acknowledged.
+  useEffect(() => {
+    if (!notice || notice.severity !== "info") return;
+    const timer = window.setTimeout(() => {
+      setNotice(prev => (prev === notice ? null : prev));
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  // Surface the AI route's health (provider + last error) on the Suggestions screen.
+  useEffect(() => {
+    if (!canUseLifeOpsServer || activeTab !== "suggestions") return;
+    let cancelled = false;
+    fetch(`${askApiBase || ""}/api/health`)
+      .then(response => (response.ok ? response.json() : null))
+      .then(data => {
+        if (!cancelled && data && typeof data === "object") setServerHealth(data);
+      })
+      .catch(() => {
+        if (!cancelled) setServerHealth(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, askApiBase, canUseLifeOpsServer]);
 
   useEffect(() => saveStoredArray("sentinel-lifeops:activeTasks", activeTasks), [activeTasks]);
   useEffect(() => saveStoredArray("sentinel-lifeops:sentinelFeed", sentinelFeed), [sentinelFeed]);
@@ -668,6 +702,20 @@ export default function LifeOpsApp() {
       not_task: "Marked not a task. Similar situations will be suppressed.",
     };
     setNotice({ text: messages[kind], severity: kind === "not_task" || kind === "too_vague" ? "warning" : "info" });
+  };
+
+  // Card-level dismissal must share the fingerprint-suppression path with the situation
+  // feedback buttons; plain removal alone lets the same suggestion resurface on the next
+  // auto-extract. Plain removal remains only for AI-extracted tasks with no situation.
+  const dismissTaskCard = (task: ExecutiveTask) => {
+    const situation = smartSituationByTaskId.get(task.id)
+      || (task.associatedAnchorId ? smartSituationByTaskId.get(task.associatedAnchorId) : undefined);
+    if (situation) {
+      applySituationFeedback(situation, "not_task");
+      return;
+    }
+    setExtractedTasks(prev => prev.filter(item => item.id !== task.id));
+    setNotice({ text: "Dismissed the card.", severity: "info" });
   };
 
   const handleCheckRelevance = async () => {
@@ -929,6 +977,34 @@ export default function LifeOpsApp() {
     setManualSignalContent("");
   };
 
+  // One-tap owner note from Today: always captured as user_note so personal notes are
+  // labeled correctly in the telemetry archive (telemetry-positive; nothing is filtered).
+  const handleAddQuickNote = () => {
+    if (!quickNoteText.trim()) {
+      setNotice({ text: "Write the note first.", severity: "warning" });
+      return;
+    }
+
+    const signal = normalizeSignal({
+      id: `manual-signal-${Date.now()}`,
+      source: "user_note",
+      title: "Quick note",
+      content: quickNoteText.trim(),
+      capturedAtEpochMillis: Date.now()
+    });
+    androidBridge?.addTelemetryJson(JSON.stringify(signal));
+    setSentinelFeed(prev => dedupeSignals([signal, ...prev]));
+
+    const task = buildTaskFromSignal(signal, 0);
+    if (task) {
+      setExtractedTasks(prev => [task, ...prev.filter(item => item.title !== task.title)].slice(0, 8));
+      setNotice({ text: "Note captured. It also created a task suggestion.", severity: "info" });
+    } else {
+      setNotice({ text: "Note captured as context.", severity: "info" });
+    }
+    setQuickNoteText("");
+  };
+
   const handleAskSentinel = async () => {
     const question = askQuestion.trim();
     if (!question) {
@@ -941,6 +1017,7 @@ export default function LifeOpsApp() {
     try {
       if (!canUseLifeOpsServer) {
         setAskAnswer(localAnswer);
+        setAskEngine("local-heuristic");
         return;
       }
 
@@ -976,9 +1053,11 @@ export default function LifeOpsApp() {
       }
       const data = await response.json();
       setAskAnswer(String(data.answer || localAnswer));
+      setAskEngine(data.answer && data.engine ? (String(data.engine) as RelevanceAudit["engine"]) : "local-heuristic");
     } catch (err) {
       console.warn("Ask Sentinel failed; using local answer:", err);
       setAskAnswer(localAnswer);
+      setAskEngine("local-heuristic");
     } finally {
       setIsAsking(false);
     }
@@ -1103,6 +1182,13 @@ export default function LifeOpsApp() {
           <p className="mt-2 text-sm leading-relaxed text-slate-400">
             The check button looks for irrelevant cards to clear. The question box asks about priorities, reasons, and what to ignore.
           </p>
+          {canUseLifeOpsServer && serverHealth && (
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">
+              AI route: {serverHealth.modelProvider || "unknown"}
+              {serverHealth.modelRuntimeStatus ? ` (${serverHealth.modelRuntimeStatus})` : ""}
+              {serverHealth.claudeLastError ? ` - last error: ${clipForClaudeCheck(serverHealth.claudeLastError, 140)}` : ""}
+            </p>
+          )}
         </div>
         <div className="w-full md:w-64">
           <ActionButton
@@ -1137,8 +1223,23 @@ export default function LifeOpsApp() {
         </button>
       </div>
       {askAnswer && (
-        <div className="mt-4 whitespace-pre-wrap rounded-lg border border-cyan-400/20 bg-cyan-950/20 p-4 text-sm leading-relaxed text-cyan-50">
-          {askAnswer}
+        <div className="mt-4 rounded-lg border border-cyan-400/20 bg-cyan-950/20 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-bold text-cyan-200">
+              Answered by {askEngine ? auditEngineLabel(askEngine) : "local rules"}
+            </span>
+            <button
+              onClick={() => {
+                setAskAnswer("");
+                setAskEngine(null);
+              }}
+              className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-ink"
+              aria-label="Clear answer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-cyan-50">{askAnswer}</p>
         </div>
       )}
     </section>
@@ -1211,9 +1312,9 @@ export default function LifeOpsApp() {
         <ActionButton
           icon={Trash2}
           label="Not a task"
-          hint="Dismiss this card"
+          hint="Dismiss and suppress"
           tone="slate"
-          onClick={() => setExtractedTasks(prev => prev.filter(item => item.id !== task.id))}
+          onClick={() => dismissTaskCard(task)}
         />
       </div>
     </article>
@@ -1247,7 +1348,7 @@ export default function LifeOpsApp() {
 
   return (
     <div className="min-h-screen bg-bg text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-800 bg-surface/95 pt-10 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-slate-800 bg-surface/95 pt-[max(2rem,env(safe-area-inset-top))] backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-cyan-400/10 p-2 text-cyan-200">
@@ -1269,7 +1370,7 @@ export default function LifeOpsApp() {
       </header>
 
       {notice && (
-        <div className={`border-b px-4 py-3 ${
+        <div role="status" aria-live="polite" className={`border-b px-4 py-3 ${
           notice.severity === "error" ? "border-rose-500/30 bg-rose-950/50 text-rose-100" :
           notice.severity === "warning" ? "border-amber-500/30 bg-amber-950/40 text-amber-100" :
           "border-cyan-500/20 bg-cyan-950/30 text-cyan-100"
@@ -1283,7 +1384,7 @@ export default function LifeOpsApp() {
         </div>
       )}
 
-      <main className="mx-auto max-w-5xl px-4 pb-56 pt-5">
+      <main className="mx-auto max-w-5xl px-4 pb-32 pt-5">
         {activeTab === "today" && (
           <div className="space-y-5">
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
@@ -1319,11 +1420,31 @@ export default function LifeOpsApp() {
                   </>
                 ) : (
                   <>
-                    <ActionButton icon={RefreshCw} label="Refresh phone data" hint="Combs the last 24 hours where Android exposes history" onClick={() => syncTelemetryLogs(true)} />
+                    <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh phone data"} hint="Combs the last 24 hours where Android exposes history" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
                     <ActionButton icon={Sparkles} label="Create suggestions" hint="Only uses actionable phone signals" tone="ai" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
                     <ActionButton icon={Plus} label="Add task manually" hint="Backup when Android cannot expose the source" tone="slate" onClick={() => setShowAddTaskModal(true)} />
                   </>
                 )}
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+              <h2 className="text-lg font-bold text-ink">Quick note</h2>
+              <p className="mt-1 text-sm text-slate-400">Capture a thought or reminder as an owner note. It is stored and exported like any other phone signal.</p>
+              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
+                <textarea
+                  value={quickNoteText}
+                  onChange={event => setQuickNoteText(event.target.value)}
+                  rows={2}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                  placeholder="Type the note. If it has a real action, it also becomes a task suggestion."
+                />
+                <button
+                  onClick={handleAddQuickNote}
+                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300 md:self-end"
+                >
+                  Save note
+                </button>
               </div>
             </section>
 
@@ -1352,9 +1473,9 @@ export default function LifeOpsApp() {
               <InfoCard icon={ListChecks} title="Suggestions" iconClass="text-accent">
                 <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
                 <p className="mt-2 text-sm text-ink-muted">Suggested task cards waiting for a decision.</p>
-                <button onClick={() => setActiveTab("suggestions")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Open suggested tasks</button>
+                <button onClick={() => setActiveTab("suggestions")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Open Suggestions</button>
               </InfoCard>
-              <InfoCard icon={Settings} title="Phone access" iconClass="text-amber-300">
+              <InfoCard icon={Settings} title="Access" iconClass="text-amber-300">
                 <p className="text-3xl font-bold text-ink">{readyPermissionCount}/4</p>
                 <p className="mt-2 text-sm text-ink-muted">Access groups ready on Android.</p>
                 <button onClick={() => setActiveTab("access")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Check access</button>
@@ -1368,14 +1489,14 @@ export default function LifeOpsApp() {
             <section className="rounded-xl border border-cyan-400/25 bg-slate-900 p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="max-w-2xl">
-                  <p className="text-sm font-bold text-cyan-200">Suggested Tasks</p>
+                  <p className="text-sm font-bold text-cyan-200">Suggestions</p>
                   <h2 className="mt-2 text-2xl font-bold text-ink">Phone language turned into task cards</h2>
                   <p className="mt-2 text-sm leading-relaxed text-slate-400">
                     Messages, missed calls, calendar items, notifications, and visible app text land here only when they contain a concrete next action.
                   </p>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[360px]">
-                  <ActionButton icon={RefreshCw} label="Refresh data" hint="Scan the last 24 hours" onClick={() => syncTelemetryLogs(true)} />
+                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="Scan the last 24 hours" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
                   <ActionButton icon={Sparkles} label="Build cards" hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
                   <ActionButton icon={Plus} label="Add task" hint="Manual backup" tone="slate" onClick={() => setShowAddTaskModal(true)} />
                 </div>
@@ -1383,7 +1504,7 @@ export default function LifeOpsApp() {
             </section>
 
             <section className="grid gap-3 md:grid-cols-3">
-              <InfoCard icon={ClipboardList} title="Suggested">
+              <InfoCard icon={ClipboardList} title="Suggestions">
                 <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
                 <p className="mt-1 text-sm text-ink-muted">cards waiting for accept or dismiss</p>
               </InfoCard>
@@ -1430,14 +1551,14 @@ export default function LifeOpsApp() {
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <p className="text-sm font-bold text-cyan-200">Phone Inbox</p>
+                  <p className="text-sm font-bold text-cyan-200">Inbox</p>
                   <h2 className="mt-2 text-2xl font-bold text-ink">Raw phone material Sentinel can see</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Use this page to refresh Android data, paste a missing item, and inspect what was captured. Suggested tasks live on their own tab.</p>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <ActionButton icon={RefreshCw} label="Refresh data" hint="24-hour scan plus current screen text" onClick={() => syncTelemetryLogs(true)} />
+                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="24-hour scan plus current screen text" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
                   <ActionButton icon={Sparkles} label="Build suggestions" hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                  <ActionButton icon={ClipboardList} label="Open suggested" hint={`${visibleSuggestionTasks.length} task cards`} tone="slate" onClick={() => setActiveTab("suggestions")} />
+                  <ActionButton icon={ClipboardList} label="Open Suggestions" hint={`${visibleSuggestionTasks.length} task cards`} tone="slate" onClick={() => setActiveTab("suggestions")} />
                 </div>
               </div>
             </section>
@@ -1495,7 +1616,7 @@ export default function LifeOpsApp() {
               {visibleSignals.length > 0 ? visibleSignals.map(renderSignalCard) : (
                 <EmptyState
                   title="No useful phone signals visible"
-                  body="Open Phone Access if the app is not receiving notifications, screen text, SMS, call log, calendar, or usage data."
+                  body="Open Access if the app is not receiving notifications, screen text, SMS, call log, calendar, or usage data."
                 />
               )}
             </section>
@@ -1508,10 +1629,10 @@ export default function LifeOpsApp() {
               <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
                 <EmptyState
                   title="No current task"
-                  body="Accept a card from Suggested Tasks, or add a task manually if Android cannot expose the source yet."
+                  body="Accept a card from Suggestions, or add a task manually if Android cannot expose the source yet."
                 />
                 <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  <ActionButton icon={Sparkles} label="Open suggested" hint="Review phone-derived cards" onClick={() => setActiveTab("suggestions")} />
+                  <ActionButton icon={Sparkles} label="Open Suggestions" hint="Review phone-derived cards" onClick={() => setActiveTab("suggestions")} />
                   <ActionButton icon={Plus} label="Add task manually" hint="Backup path" tone="slate" onClick={() => setShowAddTaskModal(true)} />
                 </div>
               </section>
@@ -1628,7 +1749,7 @@ export default function LifeOpsApp() {
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <p className="text-sm font-bold text-cyan-200">Phone Access</p>
+                  <p className="text-sm font-bold text-cyan-200">Access</p>
                   <h2 className="mt-2 text-2xl font-bold text-ink">{readyPermissionCount}/4 access groups ready</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">These buttons open Android settings. After granting access, come back here and tap Refresh status.</p>
                 </div>
@@ -1700,7 +1821,7 @@ export default function LifeOpsApp() {
               )}
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <ActionButton icon={Settings} label="Open app settings" hint="Android app permissions page" tone="slate" disabled={!isAndroidBridgeAvailable} onClick={() => androidBridge?.openAppSettings()} />
-                <ActionButton icon={RefreshCw} label="Refresh phone data" hint="Pull a fresh telemetry snapshot" disabled={!isAndroidBridgeAvailable} onClick={() => syncTelemetryLogs(true)} />
+                <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh phone data"} hint="Pull a fresh telemetry snapshot" disabled={!isAndroidBridgeAvailable || isSyncing} onClick={() => syncTelemetryLogs(true)} />
               </div>
             </section>
 
@@ -1708,13 +1829,13 @@ export default function LifeOpsApp() {
         )}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-12 z-40 border-t border-slate-800 bg-surface/95 px-3 py-2 backdrop-blur">
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-800 bg-surface/95 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur">
         <div className="mx-auto grid max-w-5xl grid-cols-5 gap-1 sm:gap-2">
           {([
             { key: "today", label: "Today", icon: Clock },
             { key: "signals", label: "Inbox", icon: Inbox },
-            { key: "suggestions", label: "Suggested", icon: ClipboardList },
-            { key: "task", label: "Current", icon: ListChecks },
+            { key: "suggestions", label: "Suggestions", icon: ClipboardList },
+            { key: "task", label: "Current Task", icon: ListChecks },
             { key: "access", label: "Access", icon: Settings }
           ] as const).map(item => {
             const Icon = item.icon;
@@ -1762,7 +1883,7 @@ export default function LifeOpsApp() {
                 </button>
               ))}
               {!activeTask && (
-                <EmptyState title="No task selected" body="Go to Suggested and start one task card." />
+                <EmptyState title="No task selected" body="Go to Suggestions and start one task card." />
               )}
             </div>
           </div>
