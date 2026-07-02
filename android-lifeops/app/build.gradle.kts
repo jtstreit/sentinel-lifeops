@@ -19,3 +19,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
+
+dependencies {
+    // Background telemetry export (TelemetryExportWorker) — keeps CBT Sentinel fed
+    // without the app being foregrounded.
+    implementation("androidx.work:work-runtime:2.10.0")
+}

@@ -59,6 +59,8 @@ public class SentinelBridge {
     private static final String LIFEOPS_API_HOST = "sentinel-lifeops-api.onrender.com";
     private static final String PREFS = "sentinel_lifeops_bridge";
     private static final String CUSTOM_LOGS = "custom_logs";
+    private static final String EXPORT_BASE_URL_PREF = "export_base_url";
+    private static final String EXPORT_TOKEN_PREF = "export_token";
     private static final SimpleDateFormat TIME_FORMAT = new SimpleDateFormat("hh:mm a", Locale.US);
     private static final SimpleDateFormat TARGET_TIME_FORMAT = new SimpleDateFormat("HH:mm", Locale.US);
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
@@ -217,6 +219,10 @@ public class SentinelBridge {
                     .put("body", responseBody);
             if (status < 200 || status >= 300) {
                 result.put("error", "LifeOps ingest returned HTTP " + status);
+            } else {
+                // A proven-good destination + token: persist so TelemetryExportWorker can keep
+                // exporting in the background after the app is closed.
+                saveExportConfig(cleanBaseUrl, cleanToken);
             }
             return result;
         } finally {
@@ -1118,6 +1124,30 @@ public class SentinelBridge {
         } catch (Exception ignored) {
             return packageName;
         }
+    }
+
+    private void saveExportConfig(String baseUrl, String token) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(EXPORT_BASE_URL_PREF, baseUrl)
+                    .putString(EXPORT_TOKEN_PREF, token == null ? "" : token)
+                    .apply();
+        } catch (Exception ignored) {
+            // Config persistence is best-effort; never let it fail an export.
+        }
+    }
+
+    static String savedExportBaseUrl(Context context) {
+        return context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(EXPORT_BASE_URL_PREF, "");
+    }
+
+    static String savedExportToken(Context context) {
+        return context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(EXPORT_TOKEN_PREF, "");
     }
 
     private String normalizeBaseUrl(String baseUrl) {

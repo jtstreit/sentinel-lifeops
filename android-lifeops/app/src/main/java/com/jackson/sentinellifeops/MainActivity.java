@@ -16,6 +16,12 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.work.Constraints;
+import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.NetworkType;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
+
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -23,6 +29,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 8042;
@@ -84,7 +91,25 @@ public class MainActivity extends Activity {
         setContentView(webView);
         applySystemBarInsets();
         requestCorePermissions();
+        scheduleBackgroundTelemetryExport();
         webView.loadUrl(APP_URL);
+    }
+
+    // Keep CBT Sentinel fed while the app is closed: the WebView's 45s export timer only runs
+    // foregrounded, so a periodic worker re-exports on WorkManager's schedule (30 min is the
+    // freshness/battery balance; CBT scans 6-hourly). UPDATE policy lets interval/constraint
+    // changes in a new APK take effect without a reinstall dance.
+    private void scheduleBackgroundTelemetryExport() {
+        PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
+                TelemetryExportWorker.class, 30, TimeUnit.MINUTES)
+                .setConstraints(new Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build())
+                .build();
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+                "lifeops-telemetry-export",
+                ExistingPeriodicWorkPolicy.UPDATE,
+                request);
     }
 
     private void applySystemBarInsets() {
