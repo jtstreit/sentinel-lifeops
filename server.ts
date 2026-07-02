@@ -12,6 +12,12 @@ import {
   scoreTelemetryLog,
   signalReason,
 } from "./src/lifeopsRules";
+import {
+  ensureTelemetrySchema,
+  isTelemetryDbEnabled,
+  loadTelemetryLogsFromDb,
+  saveTelemetryLogsToDb,
+} from "./src/telemetryDb";
 
 // Load .env with override so the project's .env is authoritative even when an
 // empty/stale ANTHROPIC_API_KEY (or similar) is already present in the ambient
@@ -581,6 +587,15 @@ function loadTelemetryLogs(): TelemetryLog[] {
   }
 }
 
+// Fire-and-forget Postgres write-through. The file store is already updated when this runs, so a
+// DB hiccup must never fail an ingest request — log and move on.
+function persistTelemetryLogsToDbAsync(logs: TelemetryLog[]) {
+  if (!isTelemetryDbEnabled() || logs.length === 0) return;
+  void saveTelemetryLogsToDb(logs).catch((err) => {
+    console.warn(`Could not write telemetry to Postgres: ${getErrorMessage(err)}`);
+  });
+}
+
 function persistTelemetryLogs() {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -807,6 +822,7 @@ app.get("/api/telemetry", (req, res) => {
     logs: globalTelemetryLogs,
     mode: "node-dev-file-store",
     persistent: true,
+    dbPersistent: isTelemetryDbEnabled(),
     ingestAuthRequired: Boolean(process.env.SENTINEL_INGEST_TOKEN),
   });
 });
@@ -825,6 +841,7 @@ app.post("/api/telemetry", (req, res) => {
 
   globalTelemetryLogs = [log, ...globalTelemetryLogs].slice(0, 500);
   persistTelemetryLogs();
+  persistTelemetryLogsToDbAsync([log]);
   res.status(201).json({ success: true, log, mode: "node-dev-file-store", persistent: true });
 });
 
@@ -856,6 +873,7 @@ app.post("/api/telemetry/bulk", (req, res) => {
     .sort((a, b) => (b.capturedAtEpochMillis || 0) - (a.capturedAtEpochMillis || 0))
     .slice(0, 500);
   persistTelemetryLogs();
+  persistTelemetryLogsToDbAsync(imported);
 
   res.status(201).json({
     success: true,
@@ -1016,7 +1034,31 @@ app.post("/api/extract-tasks", async (req, res) => {
   }
 });
 
+// Re-hydrate the in-memory/file store from Postgres on boot. The Render disk is ephemeral, so
+// after a spin-down or redeploy the file store starts empty — Postgres is the durable copy.
+// Merge (never replace) with whatever the file store already had, dedupe by id, newest first,
+// and seed the DB with any file-only records so a first deploy backfills the archive.
+async function hydrateTelemetryFromDb() {
+  if (!isTelemetryDbEnabled()) return;
+  try {
+    await ensureTelemetrySchema();
+    const restored = sanitizeLoadedTelemetryLogs(await loadTelemetryLogsFromDb(500));
+    const existingIds = new Set(globalTelemetryLogs.map((log) => log.id));
+    const merged = [...globalTelemetryLogs, ...restored.filter((log) => !existingIds.has(log.id))]
+      .sort((a, b) => (b.capturedAtEpochMillis || 0) - (a.capturedAtEpochMillis || 0))
+      .slice(0, 500);
+    const added = merged.length - globalTelemetryLogs.length;
+    globalTelemetryLogs = merged;
+    if (added > 0) persistTelemetryLogs();
+    console.log(`[sentinel-lifeops] Postgres hydration: ${restored.length} stored, ${added} restored into memory, store now ${merged.length}.`);
+    persistTelemetryLogsToDbAsync(globalTelemetryLogs);
+  } catch (err) {
+    console.warn(`[sentinel-lifeops] Postgres hydration failed (continuing file-only): ${getErrorMessage(err)}`);
+  }
+}
+
 async function start() {
+  await hydrateTelemetryFromDb();
   if (!process.env.SENTINEL_INGEST_TOKEN?.trim()) {
     console.warn(
       "[sentinel-lifeops] SECURITY: SENTINEL_INGEST_TOKEN is empty/unset — token-protected routes will reject all non-loopback callers. Set SENTINEL_INGEST_TOKEN to allow remote ingest.",
