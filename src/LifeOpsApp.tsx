@@ -555,7 +555,14 @@ export default function LifeOpsApp() {
         if (!cancelled && data && typeof data === "object") setServerHealth(data);
       })
       .catch(() => {
-        if (!cancelled) setServerHealth(null);
+        // An unreachable AI route is exactly what this line exists to explain;
+        // show it instead of hiding the status.
+        if (!cancelled) {
+          setServerHealth({
+            modelProvider: "unreachable",
+            modelRuntimeStatus: `no response from ${askApiBase || "the local server"}`,
+          });
+        }
       });
     return () => {
       cancelled = true;
