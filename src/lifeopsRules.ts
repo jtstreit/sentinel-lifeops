@@ -1,4 +1,4 @@
-import type { ExecutiveTask, SentinelEvent } from "./types";
+import type { ExecutiveTask, SentinelEvent, StoredTask, StoredTaskStatus, TaskUrgency } from "./types";
 import { formatTo12Hour, minutesToTimeString } from "./cartographer";
 
 export const STORAGE_SCHEMA_VERSION = "lifeops-time-ui-v8";
@@ -457,6 +457,19 @@ export function extractTasksHeuristic(logs: Array<SentinelEvent | any>, now = Da
   return tasks;
 }
 
+function coerceUrgency(value: unknown): TaskUrgency | undefined {
+  return value === "now" || value === "soon" || value === "later" ? value : undefined;
+}
+
+function coerceStringIdArray(value: unknown, max = 12): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = value
+    .filter(item => typeof item === "string" && item.trim().length > 0)
+    .map(item => String(item).trim().slice(0, 180))
+    .slice(0, max);
+  return ids.length > 0 ? ids : undefined;
+}
+
 export function normalizeTask(raw: any, index = 0): ExecutiveTask | null {
   if (!raw || looksLikePlaceholderTask(raw)) return null;
   const title = cleanSignalFragment(String(raw.title || ""), 96);
@@ -473,7 +486,7 @@ export function normalizeTask(raw: any, index = 0): ExecutiveTask | null {
         { id: `generated-step-${Date.now()}-${index}-1`, title: "Complete the requested action", durationMinutes: 10, state: "pending" as const }
       ];
 
-  return {
+  const task: ExecutiveTask = {
     id: String(raw.id || `generated-task-${Date.now()}-${index}`),
     title,
     estimatedDurationMinutes: Math.max(5, Number(raw.estimatedDurationMinutes || 15)),
@@ -484,4 +497,108 @@ export function normalizeTask(raw: any, index = 0): ExecutiveTask | null {
     nextPhysicalAction: cleanSignalFragment(String(raw.nextPhysicalAction || "Open the source app and do the requested action."), 140),
     steps
   };
+  const why = typeof raw.why === "string" && raw.why.trim() ? String(raw.why).replace(/\s+/g, " ").trim().slice(0, 280) : undefined;
+  if (why) task.why = why;
+  const urgency = coerceUrgency(raw.urgency);
+  if (urgency) task.urgency = urgency;
+  const sourceLogIds = coerceStringIdArray(raw.sourceLogIds);
+  if (sourceLogIds) task.sourceLogIds = sourceLogIds;
+  if (typeof raw.situationId === "string" && raw.situationId.trim()) task.situationId = raw.situationId.trim().slice(0, 180);
+  return task;
+}
+
+// Server-side gate for AI-authored task arrays. Normalizes every item, then strips any
+// traceability ids the model did not receive in the request — prompt-injected content in a
+// message body cannot forge links to signals or situations that were never sent.
+export function sanitizeExtractedTasks(
+  rawItems: unknown,
+  knownLogIds: Set<string>,
+  knownSituationIds: Set<string>
+): ExecutiveTask[] {
+  if (!Array.isArray(rawItems)) return [];
+  const tasks: ExecutiveTask[] = [];
+  for (const raw of rawItems) {
+    const task = normalizeTask(raw, tasks.length);
+    if (!task) continue;
+    if (task.sourceLogIds) {
+      const kept = task.sourceLogIds.filter(id => knownLogIds.has(id));
+      if (kept.length > 0) task.sourceLogIds = kept;
+      else delete task.sourceLogIds;
+    }
+    if (task.situationId && !knownSituationIds.has(task.situationId)) delete task.situationId;
+    tasks.push(task);
+    if (tasks.length >= 6) break;
+  }
+  return tasks;
+}
+
+// Validates a StoredTask coming from a client or from Postgres WITHOUT resetting live
+// progress: unlike normalizeTask (which builds fresh suggestions), this preserves
+// isCompleted, per-step states, status, and timestamps so sync round-trips are lossless.
+export function normalizeStoredTask(raw: any, now = Date.now()): StoredTask | null {
+  if (!raw || typeof raw !== "object") return null;
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim().slice(0, 180) : "";
+  const title = String(raw.title || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  if (!id || !title) return null;
+
+  const stepStates = new Set(["current", "pending", "done"]);
+  const steps = Array.isArray(raw.steps)
+    ? raw.steps.slice(0, 8).map((step: any, stepIndex: number) => ({
+        id: typeof step?.id === "string" && step.id.trim() ? step.id.trim().slice(0, 180) : `${id}-step-${stepIndex}`,
+        title: String(step?.title || `Step ${stepIndex + 1}`).replace(/\s+/g, " ").trim().slice(0, 140),
+        durationMinutes: Math.max(1, Number(step?.durationMinutes || 5)),
+        state: stepStates.has(step?.state) ? step.state as "current" | "pending" | "done" : "pending" as const
+      }))
+    : [];
+
+  const isCompleted = raw.isCompleted === true;
+  const status: StoredTaskStatus = raw.status === "open" || raw.status === "done" || raw.status === "dismissed"
+    ? raw.status
+    : (isCompleted ? "done" : "open");
+  const updatedAtEpochMillis = Number.isFinite(Number(raw.updatedAtEpochMillis)) && Number(raw.updatedAtEpochMillis) > 0
+    ? Number(raw.updatedAtEpochMillis)
+    : now;
+  const createdAtEpochMillis = Number.isFinite(Number(raw.createdAtEpochMillis)) && Number(raw.createdAtEpochMillis) > 0
+    ? Number(raw.createdAtEpochMillis)
+    : updatedAtEpochMillis;
+
+  const task: StoredTask = {
+    id,
+    title,
+    estimatedDurationMinutes: Math.max(1, Number(raw.estimatedDurationMinutes || 15)),
+    isCompleted: status === "done" ? true : isCompleted,
+    targetTime: coerceTimeString(raw.targetTime),
+    associatedAnchorId: raw.associatedAnchorId || null,
+    avoidanceTarget: String(raw.avoidanceTarget || "").replace(/\s+/g, " ").trim().slice(0, 160),
+    nextPhysicalAction: String(raw.nextPhysicalAction || "").replace(/\s+/g, " ").trim().slice(0, 180),
+    steps,
+    status,
+    createdAtEpochMillis,
+    updatedAtEpochMillis,
+    completedAtEpochMillis: Number.isFinite(Number(raw.completedAtEpochMillis)) && Number(raw.completedAtEpochMillis) > 0
+      ? Number(raw.completedAtEpochMillis)
+      : (status === "done" ? updatedAtEpochMillis : null)
+  };
+  const why = typeof raw.why === "string" && raw.why.trim() ? String(raw.why).replace(/\s+/g, " ").trim().slice(0, 280) : undefined;
+  if (why) task.why = why;
+  const urgency = coerceUrgency(raw.urgency);
+  if (urgency) task.urgency = urgency;
+  const sourceLogIds = coerceStringIdArray(raw.sourceLogIds);
+  if (sourceLogIds) task.sourceLogIds = sourceLogIds;
+  if (typeof raw.situationId === "string" && raw.situationId.trim()) task.situationId = raw.situationId.trim().slice(0, 180);
+  return task;
+}
+
+// Newer-wins merge by task id (updatedAtEpochMillis decides). Used by both the server
+// (POST /api/tasks) and the client sync layer so the two sides converge on the same result.
+export function mergeStoredTasks(current: StoredTask[], incoming: StoredTask[], cap = 200): StoredTask[] {
+  const byId = new Map<string, StoredTask>();
+  for (const task of current) byId.set(task.id, task);
+  for (const task of incoming) {
+    const existing = byId.get(task.id);
+    if (!existing || task.updatedAtEpochMillis >= existing.updatedAtEpochMillis) byId.set(task.id, task);
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => b.updatedAtEpochMillis - a.updatedAtEpochMillis)
+    .slice(0, cap);
 }

@@ -22,9 +22,11 @@ import {
   X,
   Zap
 } from "lucide-react";
-import type { ExecutiveTask, SentinelEvent, SlipAutopsy } from "./types";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import type { ExecutiveTask, SentinelEvent, SlipAutopsy, StoredTask } from "./types";
 import { formatTo12Hour, generateReverseTimeline, minutesToTimeString } from "./cartographer";
 import { InfoCard, Pill, SectionIntro, StatTile } from "./components/ui";
+import { TaskList } from "./components/TaskList";
 import {
   buildLocalRelevanceAudit,
   buildSmartSituations,
@@ -46,8 +48,10 @@ import {
   isTaskCandidateSignal,
   looksLikePlaceholderTask,
   MAX_STORED_ITEMS,
+  mergeStoredTasks,
   migrateStoredState,
   normalizeSignal,
+  normalizeStoredTask,
   normalizeTask,
   signalReason,
   taskSignals,
@@ -67,7 +71,7 @@ type SentinelAndroidBridge = {
   openAppSettings: () => void;
 };
 
-type AppTab = "today" | "signals" | "suggestions" | "task" | "access";
+type AppTab = "today" | "signals" | "tasks" | "access";
 type Notice = { text: string; severity: "info" | "warning" | "error" };
 type PermissionItem = {
   key: string;
@@ -250,6 +254,7 @@ function buildLocalAskAnswer(question: string, situations: SmartSituation[], sig
 }
 
 function auditEngineLabel(engine: RelevanceAudit["engine"]) {
+  if (engine === "claude-agent-sdk") return "Claude Opus";
   if (engine === "claude-sdk") return "Claude Sonnet";
   if (engine === "claude-code-cli") return "Claude Code";
   if (engine === "deepseek") return "DeepSeek";
@@ -284,6 +289,16 @@ function compactSignalForClaudeCheck(signal: SentinelEvent) {
     relevanceReason: clipForClaudeCheck(signal.relevanceReason, 160),
     capturedAtEpochMillis: signal.capturedAtEpochMillis,
     packageName: signal.packageName,
+  };
+}
+
+// Task extraction needs the situation PLUS its evidence signals (id + clipped content)
+// so the model can quote real message text in the why-line and copy real signal ids
+// into sourceLogIds. The relevance-check compaction omits signal bodies on purpose.
+function compactSituationForTaskExtraction(situation: SmartSituation) {
+  return {
+    ...compactSituationForClaudeCheck(situation),
+    signals: situation.signals.slice(0, 6).map(compactSignalForClaudeCheck),
   };
 }
 
@@ -336,7 +351,17 @@ export default function LifeOpsApp() {
   const canUseLifeOpsServer = !androidBridge || Boolean(askApiBase);
   const [activeTab, setActiveTab] = useState<AppTab>("today");
   const [currentClock, setCurrentClock] = useState(() => new Date());
-  const [activeTasks, setActiveTasks] = useState<ExecutiveTask[]>(() => loadStoredArray<ExecutiveTask>("sentinel-lifeops:activeTasks").filter(task => !looksLikePlaceholderTask(task)));
+  const [storedTasks, setStoredTasks] = useState<StoredTask[]>(() => {
+    const current = loadStoredArray<StoredTask>("sentinel-lifeops:tasks")
+      .map(task => normalizeStoredTask(task))
+      .filter((task): task is StoredTask => task !== null);
+    if (current.length > 0) return current;
+    // One-time fold of the legacy active-task store (left in place for rollback).
+    return loadStoredArray<ExecutiveTask>("sentinel-lifeops:activeTasks")
+      .filter(task => !looksLikePlaceholderTask(task))
+      .map(task => normalizeStoredTask({ ...task, status: task.isCompleted ? "done" : "open" }))
+      .filter((task): task is StoredTask => task !== null);
+  });
   const [sentinelFeed, setSentinelFeed] = useState<SentinelEvent[]>(() => dedupeSignals(loadStoredArray<SentinelEvent>("sentinel-lifeops:sentinelFeed").map((log, index) => normalizeSignal(log, index))));
   const [slipAutopsies, setSlipAutopsies] = useState<SlipAutopsy[]>(() => loadStoredArray<SlipAutopsy>("sentinel-lifeops:slipAutopsies"));
   const [extractedTasks, setExtractedTasks] = useState<ExecutiveTask[]>(() => loadStoredArray<ExecutiveTask>("sentinel-lifeops:extractedTasks").map(normalizeTask).filter(Boolean) as ExecutiveTask[]);
@@ -375,8 +400,14 @@ export default function LifeOpsApp() {
   const [slipFix, setSlipFix] = useState("");
   const lastAutoExtractKeyRef = useRef("");
   const lastTimelineNoticeKeyRef = useRef("");
+  const storedTasksRef = useRef(storedTasks);
+  const reduceMotion = useReducedMotion();
 
-  const activeTask = activeTasks.find(task => !task.isCompleted) || null;
+  useEffect(() => {
+    storedTasksRef.current = storedTasks;
+  }, [storedTasks]);
+
+  const activeTask = storedTasks.find(task => task.status === "open" && !task.isCompleted) || null;
   const nextStep = activeTask?.steps.find(step => step.state === "current") || activeTask?.steps.find(step => step.state === "pending") || null;
   const currentMinutes = currentClock.getHours() * 60 + currentClock.getMinutes();
   const displayCurrentTime = minutesToTimeString(currentMinutes);
@@ -431,6 +462,77 @@ export default function LifeOpsApp() {
     if (!androidBridge) return;
     setAndroidBridgeStatus(parseBridgeJson(androidBridge.getBridgeStatusJson(), null));
   }, [androidBridge]);
+
+  const taskAuthHeaders = useMemo(() => ({
+    "Content-Type": "application/json",
+    ...(ingestToken ? { "X-Sentinel-Ingest-Token": ingestToken } : {})
+  }), [ingestToken]);
+
+  // Fire-and-forget push of one task's state. A lost PATCH self-heals: the next full
+  // sync sees the locally-newer record and POSTs it. 404 means the server never saw
+  // this task (created offline), so upload it whole.
+  const pushTaskToServer = useCallback((task: StoredTask) => {
+    if (!canUseLifeOpsServer) return;
+    void fetch(`${askApiBase || ""}/api/tasks/${encodeURIComponent(task.id)}`, {
+      method: "PATCH",
+      headers: taskAuthHeaders,
+      body: JSON.stringify({
+        status: task.status,
+        isCompleted: task.isCompleted,
+        steps: task.steps,
+        targetTime: task.targetTime ?? null,
+        updatedAtEpochMillis: task.updatedAtEpochMillis
+      })
+    }).then(response => {
+      if (response.status === 404) {
+        return fetch(`${askApiBase || ""}/api/tasks`, {
+          method: "POST",
+          headers: taskAuthHeaders,
+          body: JSON.stringify({ tasks: [task] })
+        });
+      }
+      return response;
+    }).catch(() => {
+      // Offline is fine; the periodic sync converges later.
+    });
+  }, [askApiBase, canUseLifeOpsServer, taskAuthHeaders]);
+
+  // Two-way task sync: server list + local list, newer-wins per id, then the merged
+  // result is pushed back so both sides converge on the same state.
+  const syncTasksWithServer = useCallback(async () => {
+    if (!canUseLifeOpsServer) return;
+    try {
+      const response = await fetch(`${askApiBase || ""}/api/tasks`, {
+        headers: ingestToken ? { "X-Sentinel-Ingest-Token": ingestToken } : undefined
+      });
+      if (!response.ok) return;
+      const data = await response.json().catch(() => null);
+      const serverTasks = (Array.isArray(data?.tasks) ? data.tasks : [])
+        .map((item: unknown) => normalizeStoredTask(item))
+        .filter((task: StoredTask | null): task is StoredTask => task !== null);
+      const merged = mergeStoredTasks(storedTasksRef.current, serverTasks);
+      setStoredTasks(merged);
+      if (merged.length > 0) {
+        void fetch(`${askApiBase || ""}/api/tasks`, {
+          method: "POST",
+          headers: taskAuthHeaders,
+          body: JSON.stringify({ tasks: merged.slice(0, 50) })
+        }).catch(() => {});
+      }
+    } catch {
+      // Unreachable server just means local-only until the next sync.
+    }
+  }, [askApiBase, canUseLifeOpsServer, ingestToken, taskAuthHeaders]);
+
+  // Every task mutation flows through here: normalize, stamp updatedAt, merge into
+  // local state (newer-wins keeps ordering consistent), persist to the server.
+  const applyTaskChange = useCallback((task: StoredTask, changes: Partial<StoredTask>): StoredTask | null => {
+    const next = normalizeStoredTask({ ...task, ...changes, updatedAtEpochMillis: Date.now() });
+    if (!next) return null;
+    setStoredTasks(prev => mergeStoredTasks(prev, [next]));
+    pushTaskToServer(next);
+    return next;
+  }, [pushTaskToServer]);
 
   const pushTelemetryExport = useCallback(async (logs: SentinelEvent[], forceRefresh: boolean) => {
     if (!androidBridge || logs.length === 0) return "";
@@ -547,7 +649,7 @@ export default function LifeOpsApp() {
 
   // Surface the AI route's health (provider + last error) on the Suggestions screen.
   useEffect(() => {
-    if (!canUseLifeOpsServer || activeTab !== "suggestions") return;
+    if (!canUseLifeOpsServer || activeTab !== "tasks") return;
     let cancelled = false;
     fetch(`${askApiBase || ""}/api/health`)
       .then(response => (response.ok ? response.json() : null))
@@ -569,7 +671,12 @@ export default function LifeOpsApp() {
     };
   }, [activeTab, askApiBase, canUseLifeOpsServer]);
 
-  useEffect(() => saveStoredArray("sentinel-lifeops:activeTasks", activeTasks), [activeTasks]);
+  useEffect(() => {
+    saveStoredArray("sentinel-lifeops:tasks", storedTasks);
+    // Legacy key stays written (ExecutiveTask-compatible shape) so rolling back to an
+    // older build keeps the open/done tasks.
+    saveStoredArray("sentinel-lifeops:activeTasks", storedTasks.filter(task => task.status !== "dismissed"));
+  }, [storedTasks]);
   useEffect(() => saveStoredArray("sentinel-lifeops:sentinelFeed", sentinelFeed), [sentinelFeed]);
   useEffect(() => saveStoredArray("sentinel-lifeops:slipAutopsies", slipAutopsies), [slipAutopsies]);
   useEffect(() => saveStoredArray("sentinel-lifeops:extractedTasks", extractedTasks), [extractedTasks]);
@@ -581,6 +688,15 @@ export default function LifeOpsApp() {
     const interval = window.setInterval(() => syncTelemetryLogs(), 45000);
     return () => window.clearInterval(interval);
   }, [syncTelemetryLogs]);
+
+  // Task list converges with the server on boot and then periodically; local state
+  // renders immediately and every mutation already pushes itself, so this is a
+  // safety net for missed PATCHes and edits made from another device.
+  useEffect(() => {
+    syncTasksWithServer();
+    const interval = window.setInterval(() => syncTasksWithServer(), 120000);
+    return () => window.clearInterval(interval);
+  }, [syncTasksWithServer]);
 
   useEffect(() => {
     refreshAndroidStatus();
@@ -616,33 +732,54 @@ export default function LifeOpsApp() {
     setIsExtractingTasks(true);
     try {
       let parsedTasks: ExecutiveTask[] = [];
+      let aiEngine = "";
       if (isAutomatic) {
+        // Auto-extract stays local: it fires every time new signals land and must not
+        // burn an AI call in the background.
         parsedTasks = [];
+      } else if (canUseLifeOpsServer) {
+        // Server AI first: the model sees grouped situations WITH evidence text, so it
+        // can word coherent tasks with a grounded why-line. The Java bridge heuristic
+        // is only the offline fallback.
+        try {
+          const response = await fetch(`${askApiBase || ""}/api/extract-tasks`, {
+            method: "POST",
+            headers: taskAuthHeaders,
+            body: JSON.stringify({
+              situations: smartSituations.slice(0, 8).map(compactSituationForTaskExtraction),
+              logs: taskReadySignals.slice(0, 30).map(compactSignalForClaudeCheck)
+            })
+          });
+          if (response.ok) {
+            const data = await response.json();
+            parsedTasks = (data.results || []).map(normalizeTask).filter(Boolean) as ExecutiveTask[];
+            aiEngine = String(data.engine || "");
+          }
+        } catch (err) {
+          console.warn("Server task extraction unreachable; falling back:", err);
+        }
+        if (parsedTasks.length === 0 && androidBridge) {
+          const data = parseBridgeJson<{ results?: any[] }>(androidBridge.extractTasksJson(JSON.stringify(taskReadySignals)), {});
+          parsedTasks = (data.results || []).map(normalizeTask).filter(Boolean) as ExecutiveTask[];
+        }
       } else if (androidBridge) {
         const data = parseBridgeJson<{ results?: any[] }>(androidBridge.extractTasksJson(JSON.stringify(taskReadySignals)), {});
         parsedTasks = (data.results || []).map(normalizeTask).filter(Boolean) as ExecutiveTask[];
-      } else {
-        const response = await fetch("/api/extract-tasks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ logs: taskReadySignals })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          parsedTasks = (data.results || []).map(normalizeTask).filter(Boolean) as ExecutiveTask[];
-        }
       }
 
+      // AI wording wins when available; situation templates and raw heuristics are
+      // fallbacks (this used to be inverted, which threw the AI results away).
       const smartTasks = smartTasksFromSituations(smartSituations);
       const fallbackTasks = smartTasks.length > 0 ? smartTasks : extractTasksHeuristic(taskReadySignals);
-      const nextTasks = fallbackTasks.length > 0 ? fallbackTasks : parsedTasks;
+      const nextTasks = parsedTasks.length > 0 ? parsedTasks : fallbackTasks;
       setExtractedTasks(nextTasks);
       if (!isAutomatic && nextTasks.length > 0) {
-        setActiveTab("suggestions");
+        setActiveTab("tasks");
       }
+      const aiWorded = parsedTasks.length > 0 && aiEngine && aiEngine !== "local-heuristic";
       setNotice({
         text: nextTasks.length > 0
-          ? `${isAutomatic ? "Built" : "Built"} ${nextTasks.length} real task suggestion${nextTasks.length === 1 ? "" : "s"} from actionable phone signals.`
+          ? `Built ${nextTasks.length} task suggestion${nextTasks.length === 1 ? "" : "s"} ${aiWorded ? `worded by ${auditEngineLabel(aiEngine as RelevanceAudit["engine"])} from grouped phone evidence` : "from actionable phone signals"}.`
           : "No real task was created. App usage and ordinary calls are being kept as context only.",
         severity: nextTasks.length > 0 ? "info" : "warning"
       });
@@ -658,7 +795,7 @@ export default function LifeOpsApp() {
     } finally {
       setIsExtractingTasks(false);
     }
-  }, [androidBridge, smartSituations, taskReadySignals]);
+  }, [androidBridge, askApiBase, canUseLifeOpsServer, smartSituations, taskAuthHeaders, taskReadySignals]);
 
   useEffect(() => {
     if (taskReadySignals.length === 0 || extractedTasks.length > 0 || activeTask || isExtractingTasks) return;
@@ -673,21 +810,30 @@ export default function LifeOpsApp() {
 
   const approveTaskCandidate = (task: ExecutiveTask) => {
     const targetTime = coerceTimeString(taskTargetOverrides[task.id] || task.targetTime);
-    const approvedTask: ExecutiveTask = {
+    const now = Date.now();
+    const approvedTask = normalizeStoredTask({
       ...task,
-      id: `active-task-${Date.now()}`,
+      id: `active-task-${now}`,
       isCompleted: false,
+      status: "open",
       targetTime,
-      steps: task.steps.map((step, index) => ({ ...step, state: index === 0 ? "current" : "pending" }))
-    };
-    setActiveTasks(prev => [approvedTask, ...prev]);
+      steps: task.steps.map((step, index) => ({ ...step, state: index === 0 ? "current" : "pending" })),
+      createdAtEpochMillis: now,
+      updatedAtEpochMillis: now
+    });
+    if (!approvedTask) {
+      setNotice({ text: "That card could not become a task. Try adding it manually.", severity: "warning" });
+      return;
+    }
+    setStoredTasks(prev => mergeStoredTasks(prev, [approvedTask]));
+    pushTaskToServer(approvedTask);
     setExtractedTasks(prev => prev.filter(item => item.id !== task.id));
     setTaskTargetOverrides(prev => {
       const next = { ...prev };
       delete next[task.id];
       return next;
     });
-    setActiveTab("task");
+    setActiveTab("tasks");
     setNotice({ text: targetTime ? `Current task set for ${formatTo12Hour(targetTime)}: ${task.title}` : `Current task set: ${task.title}`, severity: "info" });
   };
 
@@ -760,7 +906,7 @@ export default function LifeOpsApp() {
 
       setRelevanceAudit(audit);
       setSelectedAuditIds(Object.fromEntries(audit.items.filter(item => item.confidence === "high").map(item => [item.id, true])));
-      setActiveTab("suggestions");
+      setActiveTab("tasks");
       const engineLabel = auditEngineLabel(audit.engine);
       const fallbackNote = audit.engine === "local-heuristic" && canUseLifeOpsServer
         ? serverWarning
@@ -843,27 +989,79 @@ export default function LifeOpsApp() {
   const updateActiveTaskTargetTime = (value: string) => {
     if (!activeTask) return;
     const targetTime = coerceTimeString(value);
-    setActiveTasks(prev => prev.map(task => task.id === activeTask.id ? { ...task, targetTime } : task));
+    applyTaskChange(activeTask, { targetTime });
     setNotice({ text: targetTime ? `Task time set to ${formatTo12Hour(targetTime)}.` : "Task time cleared.", severity: "info" });
   };
 
   const updateTaskStepState = (taskId: string, stepId: string) => {
-    setActiveTasks(prev => prev.map(task => {
-      if (task.id !== taskId) return task;
-      const stepIndex = task.steps.findIndex(step => step.id === stepId);
-      const steps = task.steps.map((step, index) => {
-        if (step.id === stepId) return { ...step, state: "done" as const };
-        if (index === stepIndex + 1) return { ...step, state: "current" as const };
-        return step;
-      });
-      const isCompleted = steps.every(step => step.state === "done");
-      return {
-        ...task,
-        steps,
-        isCompleted,
-        nextPhysicalAction: steps.find(step => step.state === "current")?.title || "All listed steps are done."
-      };
-    }));
+    const task = storedTasks.find(item => item.id === taskId);
+    if (!task) return;
+    const stepIndex = task.steps.findIndex(step => step.id === stepId);
+    const steps = task.steps.map((step, index) => {
+      if (step.id === stepId) return { ...step, state: "done" as const };
+      if (index === stepIndex + 1 && step.state !== "done") return { ...step, state: "current" as const };
+      return step;
+    });
+    const isCompleted = steps.length > 0 && steps.every(step => step.state === "done");
+    applyTaskChange(task, {
+      steps,
+      isCompleted,
+      status: isCompleted ? "done" : "open",
+      completedAtEpochMillis: isCompleted ? Date.now() : null,
+      nextPhysicalAction: steps.find(step => step.state === "current")?.title || "All listed steps are done."
+    });
+  };
+
+  // Checkbox toggle from the task list: flips one step in either direction and
+  // recomputes which step is "current" (first not-done).
+  const toggleTaskStep = (task: StoredTask, stepId: string) => {
+    const flipped = task.steps.map(step => step.id === stepId
+      ? { ...step, state: step.state === "done" ? "pending" as const : "done" as const }
+      : step);
+    let currentAssigned = false;
+    const steps = flipped.map(step => {
+      if (step.state === "done") return step;
+      if (!currentAssigned) {
+        currentAssigned = true;
+        return { ...step, state: "current" as const };
+      }
+      return step.state === "current" ? { ...step, state: "pending" as const } : step;
+    });
+    const isCompleted = steps.length > 0 && steps.every(step => step.state === "done");
+    applyTaskChange(task, {
+      steps,
+      isCompleted,
+      status: isCompleted ? "done" : "open",
+      completedAtEpochMillis: isCompleted ? Date.now() : null,
+      nextPhysicalAction: steps.find(step => step.state === "current")?.title || task.nextPhysicalAction
+    });
+  };
+
+  const toggleTaskComplete = (task: StoredTask) => {
+    if (task.status === "done") {
+      applyTaskChange(task, { status: "open", isCompleted: false, completedAtEpochMillis: null });
+      setNotice({ text: `Reopened: ${task.title}`, severity: "info" });
+      return;
+    }
+    applyTaskChange(task, {
+      status: "done",
+      isCompleted: true,
+      completedAtEpochMillis: Date.now(),
+      steps: task.steps.map(step => ({ ...step, state: "done" as const }))
+    });
+    setNotice({ text: `Done: ${task.title}`, severity: "info" });
+  };
+
+  const dismissStoredTask = (task: StoredTask) => {
+    applyTaskChange(task, { status: "dismissed", isCompleted: false });
+    setNotice({ text: "Removed from the task list.", severity: "info" });
+  };
+
+  // "Focus" = make this the current task. The active task is the most recently
+  // touched open task, so bumping updatedAt is enough.
+  const focusStoredTask = (task: StoredTask) => {
+    applyTaskChange(task, {});
+    setNotice({ text: `Current task: ${task.title}`, severity: "info" });
   };
 
   const handleMarkNextStepDone = () => {
@@ -874,11 +1072,13 @@ export default function LifeOpsApp() {
 
   const handleFinishTask = () => {
     if (!activeTask) return;
-    setActiveTasks(prev => prev.map(task => task.id === activeTask.id
-      ? { ...task, isCompleted: true, steps: task.steps.map(step => ({ ...step, state: "done" as const })) }
-      : task));
+    applyTaskChange(activeTask, {
+      isCompleted: true,
+      status: "done",
+      completedAtEpochMillis: Date.now(),
+      steps: activeTask.steps.map(step => ({ ...step, state: "done" as const }))
+    });
     setNotice({ text: `Finished: ${activeTask.title}`, severity: "info" });
-    setActiveTab("today");
   };
 
   const handleRunningLate = () => {
@@ -886,28 +1086,24 @@ export default function LifeOpsApp() {
       setNotice({ text: "Pick a current task first, then I can shrink it to the shortest route.", severity: "warning" });
       return;
     }
-    setActiveTasks(prev => prev.map(task => {
-      if (task.id !== activeTask.id) return task;
-      const unfinished = task.steps.filter(step => step.state !== "done").slice(0, 3);
-      return {
-        ...task,
-        estimatedDurationMinutes: Math.max(5, Math.round(task.estimatedDurationMinutes * 0.7)),
-        nextPhysicalAction: unfinished[0]?.title || task.nextPhysicalAction,
-        steps: unfinished.map((step, index) => ({
-          ...step,
-          title: step.title.replace(/^Fast route:\s*/i, ""),
-          durationMinutes: Math.max(1, Math.round(step.durationMinutes * 0.7)),
-          state: index === 0 ? "current" as const : "pending" as const
-        }))
-      };
-    }));
+    const unfinished = activeTask.steps.filter(step => step.state !== "done").slice(0, 3);
+    applyTaskChange(activeTask, {
+      estimatedDurationMinutes: Math.max(5, Math.round(activeTask.estimatedDurationMinutes * 0.7)),
+      nextPhysicalAction: unfinished[0]?.title || activeTask.nextPhysicalAction,
+      steps: unfinished.map((step, index) => ({
+        ...step,
+        title: step.title.replace(/^Fast route:\s*/i, ""),
+        durationMinutes: Math.max(1, Math.round(step.durationMinutes * 0.7)),
+        state: index === 0 ? "current" as const : "pending" as const
+      }))
+    });
     setNotice({ text: "Late mode: keeping only the next few useful steps.", severity: "warning" });
   };
 
   const handleReturnFromDrift = () => {
     if (!activeTask) return;
     window.navigator.vibrate?.([120, 60, 120]);
-    setActiveTab("task");
+    setActiveTab("tasks");
     setNotice({ text: `Return to the current task. Next action: ${nextStep?.title || activeTask.nextPhysicalAction}`, severity: "error" });
   };
 
@@ -929,26 +1125,35 @@ export default function LifeOpsApp() {
           state: index === 0 ? "current" as const : "pending" as const
         };
       });
-    const newTask: ExecutiveTask = {
-      id: `manual-task-${Date.now()}`,
+    const now = Date.now();
+    const newTask = normalizeStoredTask({
+      id: `manual-task-${now}`,
       title: newTaskTitle.trim(),
       estimatedDurationMinutes: Math.max(5, newTaskDuration),
       isCompleted: false,
+      status: "open",
       targetTime: coerceTimeString(newTaskTargetTime),
       avoidanceTarget: "Opening unrelated apps before this is handled",
       nextPhysicalAction: newTaskNextPhysical.trim() || parsedSteps[0]?.title || "Open the source app and start the first step.",
       steps: parsedSteps.length > 0 ? parsedSteps : [
-        { id: `manual-step-${Date.now()}-0`, title: "Open the source app or material", durationMinutes: 5, state: "current" },
-        { id: `manual-step-${Date.now()}-1`, title: "Complete the requested action", durationMinutes: 10, state: "pending" }
-      ]
-    };
-    setActiveTasks(prev => [newTask, ...prev]);
+        { id: `manual-step-${now}-0`, title: "Open the source app or material", durationMinutes: 5, state: "current" },
+        { id: `manual-step-${now}-1`, title: "Complete the requested action", durationMinutes: 10, state: "pending" }
+      ],
+      createdAtEpochMillis: now,
+      updatedAtEpochMillis: now
+    });
+    if (!newTask) {
+      setNotice({ text: "Task could not be created from that input.", severity: "warning" });
+      return;
+    }
+    setStoredTasks(prev => mergeStoredTasks(prev, [newTask]));
+    pushTaskToServer(newTask);
     setNewTaskTitle("");
     setNewTaskNextPhysical("");
     setNewTaskTargetTime("");
     setNewStepsInput("");
     setShowAddTaskModal(false);
-    setActiveTab("task");
+    setActiveTab("tasks");
     setNotice({ text: `Current task created: ${newTask.title}`, severity: "info" });
   };
 
@@ -974,7 +1179,7 @@ export default function LifeOpsApp() {
       if (task.targetTime) {
         setTaskTargetOverrides(prev => ({ ...prev, [task.id]: task.targetTime! }));
       }
-      setActiveTab("suggestions");
+      setActiveTab("tasks");
       setNotice({ text: task.targetTime ? `Created a task suggestion for ${formatTo12Hour(task.targetTime)}.` : "Created a task suggestion from pasted text.", severity: "info" });
     } else {
       setNotice({ text: "Saved as context. It did not contain a concrete request, missed call, visible screen task, deadline, or appointment.", severity: "warning" });
@@ -1256,6 +1461,13 @@ export default function LifeOpsApp() {
     <article key={task.id} className="rounded-lg border border-cyan-400/25 bg-slate-900 p-4 shadow-sm">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-bold text-cyan-200">Suggested task</span>
+        {task.urgency && (
+          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
+            task.urgency === "now" ? "bg-rose-500/10 text-rose-200" : task.urgency === "soon" ? "bg-amber-400/10 text-amber-200" : "bg-slate-800 text-slate-300"
+          }`}>
+            {task.urgency}
+          </span>
+        )}
         <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">{task.estimatedDurationMinutes} min</span>
         {(taskTargetOverrides[task.id] || task.targetTime) && (
           <span className="rounded-full bg-amber-400/10 px-2.5 py-1 text-xs font-bold text-amber-200">
@@ -1266,6 +1478,7 @@ export default function LifeOpsApp() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-bold text-ink">{task.title}</h3>
+          {task.why && <p className="mt-2 text-sm leading-relaxed text-slate-400">{task.why}</p>}
           <p className="mt-2 text-sm leading-relaxed text-slate-300">{task.nextPhysicalAction}</p>
         </div>
       </div>
@@ -1376,22 +1589,41 @@ export default function LifeOpsApp() {
         </div>
       </header>
 
-      {notice && (
-        <div role="status" aria-live="polite" className={`border-b px-4 py-3 ${
-          notice.severity === "error" ? "border-rose-500/30 bg-rose-950/50 text-rose-100" :
-          notice.severity === "warning" ? "border-amber-500/30 bg-amber-950/40 text-amber-100" :
-          "border-cyan-500/20 bg-cyan-950/30 text-cyan-100"
-        }`}>
-          <div className="mx-auto flex max-w-5xl items-start justify-between gap-3 text-sm">
-            <span className="leading-relaxed">{notice.text}</span>
-            <button onClick={() => setNotice(null)} className="rounded p-1 text-slate-300 hover:bg-white/10" aria-label="Dismiss message">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {notice && (
+          <motion.div
+            key={notice.text}
+            initial={reduceMotion ? false : { opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? undefined : { opacity: 0, y: -8 }}
+            transition={{ duration: 0.16 }}
+            role="status"
+            aria-live="polite"
+            className={`border-b px-4 py-3 ${
+              notice.severity === "error" ? "border-rose-500/30 bg-rose-950/50 text-rose-100" :
+              notice.severity === "warning" ? "border-amber-500/30 bg-amber-950/40 text-amber-100" :
+              "border-cyan-500/20 bg-cyan-950/30 text-cyan-100"
+            }`}
+          >
+            <div className="mx-auto flex max-w-5xl items-start justify-between gap-3 text-sm">
+              <span className="leading-relaxed">{notice.text}</span>
+              <button onClick={() => setNotice(null)} className="rounded p-1 text-slate-300 hover:bg-white/10" aria-label="Dismiss message">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <main className="mx-auto max-w-5xl px-4 pb-32 pt-5">
+        <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={activeTab}
+          initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduceMotion ? undefined : { opacity: 0 }}
+          transition={{ duration: 0.12 }}
+        >
         {activeTab === "today" && (
           <div className="space-y-5">
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
@@ -1480,7 +1712,7 @@ export default function LifeOpsApp() {
               <InfoCard icon={ListChecks} title="Suggestions" iconClass="text-accent">
                 <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
                 <p className="mt-2 text-sm text-ink-muted">Suggested task cards waiting for a decision.</p>
-                <button onClick={() => setActiveTab("suggestions")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Open Suggestions</button>
+                <button onClick={() => setActiveTab("tasks")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Open Tasks</button>
               </InfoCard>
               <InfoCard icon={Settings} title="Access" iconClass="text-amber-300">
                 <p className="text-3xl font-bold text-ink">{readyPermissionCount}/4</p>
@@ -1491,165 +1723,33 @@ export default function LifeOpsApp() {
           </div>
         )}
 
-        {activeTab === "suggestions" && (
+        {activeTab === "tasks" && (
           <div className="space-y-5">
             <section className="rounded-xl border border-cyan-400/25 bg-slate-900 p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="max-w-2xl">
-                  <p className="text-sm font-bold text-cyan-200">Suggestions</p>
-                  <h2 className="mt-2 text-2xl font-bold text-ink">Phone language turned into task cards</h2>
+                  <p className="text-sm font-bold text-cyan-200">Tasks</p>
+                  <h2 className="mt-2 text-2xl font-bold text-ink">One list: current task, open tasks, done history</h2>
                   <p className="mt-2 text-sm leading-relaxed text-slate-400">
-                    Messages, missed calls, calendar items, notifications, and visible app text land here only when they contain a concrete next action.
+                    Messages, missed calls, calendar items, notifications, and visible app text become suggestions only when they contain a concrete next action. Accepted ones live here with checkmarks.
                   </p>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[360px]">
                   <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="Scan the last 24 hours" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
-                  <ActionButton icon={Sparkles} label="Build cards" hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
+                  <ActionButton icon={Sparkles} label={isExtractingTasks ? "Building..." : "Build cards"} hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
                   <ActionButton icon={Plus} label="Add task" hint="Manual backup" tone="slate" onClick={() => setShowAddTaskModal(true)} />
                 </div>
               </div>
             </section>
 
-            <section className="grid gap-3 md:grid-cols-3">
-              <InfoCard icon={ClipboardList} title="Suggestions">
-                <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
-                <p className="mt-1 text-sm text-ink-muted">cards waiting for accept or dismiss</p>
-              </InfoCard>
-              <InfoCard icon={Sparkles} title="Task-ready language" iconClass="text-emerald-200">
-                <p className="text-3xl font-bold text-ink">{taskReadySignals.length}</p>
-                <p className="mt-1 text-sm text-ink-muted">items with an action, deadline, or missed call</p>
-              </InfoCard>
-              <InfoCard icon={Inbox} title="Context only" iconClass="text-ink-faint">
-                <p className="text-3xl font-bold text-ink">{Math.max(0, visibleSignals.length - taskReadySignals.length)}</p>
-                <p className="mt-1 text-sm text-ink-muted">phone items kept out of the task list</p>
-              </InfoCard>
-            </section>
-
-            {renderClaudeReviewPanel()}
-            {renderRelevanceAuditPanel()}
-
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-ink">Ready to decide</h2>
-                  <p className="mt-1 text-sm text-slate-400">Start the real task, set a time, or mark the card as not a task.</p>
-                </div>
-                {visibleSuggestionTasks.length > 0 && (
-                  <button onClick={() => setExtractedTasks([])} className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800">
-                    Clear suggestion cards
-                  </button>
-                )}
-              </div>
-
-              <div className="mt-4 space-y-3">
-                {visibleSuggestionTasks.length > 0 ? visibleSuggestionTasks.map(renderTaskCard) : (
-                  <EmptyState
-                    title="No suggested tasks yet"
-                    body={taskReadySignals.length > 0 ? "Task-ready phone language is available. Build cards to turn it into suggestions." : "Refresh phone data to look for messages, missed calls, calendar events, notifications, and screen text with a real action."}
-                  />
-                )}
-              </div>
-            </section>
-          </div>
-        )}
-
-        {activeTab === "signals" && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="text-sm font-bold text-cyan-200">Inbox</p>
-                  <h2 className="mt-2 text-2xl font-bold text-ink">Raw phone material Sentinel can see</h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Use this page to refresh Android data, paste a missing item, and inspect what was captured. Suggested tasks live on their own tab.</p>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="24-hour scan plus current screen text" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
-                  <ActionButton icon={Sparkles} label="Build suggestions" hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                  <ActionButton icon={ClipboardList} label="Open Suggestions" hint={`${visibleSuggestionTasks.length} task cards`} tone="slate" onClick={() => setActiveTab("suggestions")} />
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h2 className="text-lg font-bold text-ink">Paste a phone item</h2>
-              <p className="mt-2 text-sm leading-relaxed text-slate-400">Useful in desktop preview, or when Android did not expose a specific message yet.</p>
-              <div className="mt-4 grid gap-3 md:grid-cols-[160px_1fr]">
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-300">Source</span>
-                  <select
-                    value={manualSignalSource}
-                    onChange={event => setManualSignalSource(event.target.value as SentinelEvent["source"])}
-                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-                  >
-                    <option value="sms">SMS</option>
-                    <option value="notification">Notification</option>
-                    <option value="calendar">Calendar</option>
-                    <option value="screen_text">Screen text</option>
-                    <option value="user_note">Note</option>
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-300">Title</span>
-                  <input
-                    value={manualSignalTitle}
-                    onChange={event => setManualSignalTitle(event.target.value)}
-                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-                    placeholder="Who or what is this from?"
-                  />
-                </label>
-              </div>
-              <label className="mt-3 block">
-                <span className="text-sm font-bold text-slate-300">Text</span>
-                <textarea
-                  value={manualSignalContent}
-                  onChange={event => setManualSignalContent(event.target.value)}
-                  rows={4}
-                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-                  placeholder="Paste the real message, reminder, event, or screen text here."
-                />
-              </label>
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={handleAddManualSignal}
-                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300"
-                >
-                  Save and suggest
-                </button>
-              </div>
-            </section>
-
-            <section className="space-y-3">
-              <h2 className="text-lg font-bold text-ink">Recent phone signals</h2>
-              {visibleSignals.length > 0 ? visibleSignals.map(renderSignalCard) : (
-                <EmptyState
-                  title="No useful phone signals visible"
-                  body="Open Access if the app is not receiving notifications, screen text, SMS, call log, calendar, or usage data."
-                />
-              )}
-            </section>
-          </div>
-        )}
-
-        {activeTab === "task" && (
-          <div className="space-y-5">
-            {!activeTask ? (
-              <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                <EmptyState
-                  title="No current task"
-                  body="Accept a card from Suggestions, or add a task manually if Android cannot expose the source yet."
-                />
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  <ActionButton icon={Sparkles} label="Open Suggestions" hint="Review phone-derived cards" onClick={() => setActiveTab("suggestions")} />
-                  <ActionButton icon={Plus} label="Add task manually" hint="Backup path" tone="slate" onClick={() => setShowAddTaskModal(true)} />
-                </div>
-              </section>
-            ) : (
+            {activeTask && (
               <>
-                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+                <section className="rounded-xl border border-emerald-400/25 bg-slate-900 p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div>
                       <p className="text-sm font-bold text-emerald-200">Current Task</p>
                       <h2 className="mt-2 text-2xl font-bold text-ink">{activeTask.title}</h2>
+                      {activeTask.why && <p className="mt-2 text-sm leading-relaxed text-slate-400">{activeTask.why}</p>}
                       <p className="mt-3 text-base leading-relaxed text-slate-300">{nextStep?.title || activeTask.nextPhysicalAction}</p>
                     </div>
                     <div className="grid grid-cols-2 gap-3 lg:w-72">
@@ -1672,11 +1772,7 @@ export default function LifeOpsApp() {
                     <ActionButton icon={TimerReset} label="Running late" hint="Shrink the route" tone="red" onClick={handleRunningLate} />
                     <ActionButton icon={CheckCircle2} label="Finish task" hint="Mark all done" tone="slate" onClick={handleFinishTask} />
                   </div>
-                </section>
-
-                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                  <h3 className="text-lg font-bold text-ink">Steps</h3>
-                  <div className="mt-4 space-y-3">
+                  <div className="mt-5 space-y-3">
                     {activeTask.steps.map((step, index) => (
                       <button
                         key={step.id}
@@ -1748,6 +1844,130 @@ export default function LifeOpsApp() {
                 </section>
               </>
             )}
+
+            <TaskList
+              tasks={storedTasks}
+              isLoading={isExtractingTasks && storedTasks.length === 0}
+              fallbackWhyFor={task => smartSituationByTaskId.get(task.situationId || task.associatedAnchorId || task.id)?.why[0]}
+              onToggleComplete={toggleTaskComplete}
+              onToggleStep={toggleTaskStep}
+              onDismiss={dismissStoredTask}
+              onFocus={focusStoredTask}
+            />
+
+            {renderClaudeReviewPanel()}
+            {renderRelevanceAuditPanel()}
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-lg font-bold text-ink">Suggestions</h2>
+                  <p className="mt-1 text-sm text-slate-400">Accept a card to add it to the task list, or mark it as not a task.</p>
+                </div>
+                {visibleSuggestionTasks.length > 0 && (
+                  <button onClick={() => setExtractedTasks([])} className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800">
+                    Clear suggestion cards
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {isExtractingTasks && (
+                  <div className="space-y-3" aria-hidden>
+                    {[0, 1].map(row => (
+                      <div key={row} className="animate-pulse rounded-lg border border-slate-800 bg-slate-950/60 p-4">
+                        <div className="h-3 w-28 rounded bg-slate-800" />
+                        <div className="mt-3 h-4 w-2/3 rounded bg-slate-800" />
+                        <div className="mt-2 h-3 w-1/2 rounded bg-slate-800/70" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!isExtractingTasks && (visibleSuggestionTasks.length > 0 ? visibleSuggestionTasks.map(renderTaskCard) : (
+                  <EmptyState
+                    title="No suggested tasks yet"
+                    body={taskReadySignals.length > 0 ? "Task-ready phone language is available. Build cards to turn it into suggestions." : "Refresh phone data to look for messages, missed calls, calendar events, notifications, and screen text with a real action."}
+                  />
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === "signals" && (
+          <div className="space-y-5">
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-cyan-200">Inbox</p>
+                  <h2 className="mt-2 text-2xl font-bold text-ink">Raw phone material Sentinel can see</h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Use this page to refresh Android data, paste a missing item, and inspect what was captured. Suggested tasks live on their own tab.</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="24-hour scan plus current screen text" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
+                  <ActionButton icon={Sparkles} label="Build suggestions" hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
+                  <ActionButton icon={ClipboardList} label="Open Tasks" hint={`${visibleSuggestionTasks.length} suggestion cards`} tone="slate" onClick={() => setActiveTab("tasks")} />
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+              <h2 className="text-lg font-bold text-ink">Paste a phone item</h2>
+              <p className="mt-2 text-sm leading-relaxed text-slate-400">Useful in desktop preview, or when Android did not expose a specific message yet.</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-[160px_1fr]">
+                <label className="block">
+                  <span className="text-sm font-bold text-slate-300">Source</span>
+                  <select
+                    value={manualSignalSource}
+                    onChange={event => setManualSignalSource(event.target.value as SentinelEvent["source"])}
+                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                  >
+                    <option value="sms">SMS</option>
+                    <option value="notification">Notification</option>
+                    <option value="calendar">Calendar</option>
+                    <option value="screen_text">Screen text</option>
+                    <option value="user_note">Note</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-bold text-slate-300">Title</span>
+                  <input
+                    value={manualSignalTitle}
+                    onChange={event => setManualSignalTitle(event.target.value)}
+                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                    placeholder="Who or what is this from?"
+                  />
+                </label>
+              </div>
+              <label className="mt-3 block">
+                <span className="text-sm font-bold text-slate-300">Text</span>
+                <textarea
+                  value={manualSignalContent}
+                  onChange={event => setManualSignalContent(event.target.value)}
+                  rows={4}
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                  placeholder="Paste the real message, reminder, event, or screen text here."
+                />
+              </label>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={handleAddManualSignal}
+                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300"
+                >
+                  Save and suggest
+                </button>
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-lg font-bold text-ink">Recent phone signals</h2>
+              {visibleSignals.length > 0 ? visibleSignals.map(renderSignalCard) : (
+                <EmptyState
+                  title="No useful phone signals visible"
+                  body="Open Access if the app is not receiving notifications, screen text, SMS, call log, calendar, or usage data."
+                />
+              )}
+            </section>
           </div>
         )}
 
@@ -1834,15 +2054,16 @@ export default function LifeOpsApp() {
 
           </div>
         )}
+        </motion.div>
+        </AnimatePresence>
       </main>
 
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-800 bg-surface/95 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur">
-        <div className="mx-auto grid max-w-5xl grid-cols-5 gap-1 sm:gap-2">
+        <div className="mx-auto grid max-w-5xl grid-cols-4 gap-1 sm:gap-2">
           {([
             { key: "today", label: "Today", icon: Clock },
             { key: "signals", label: "Inbox", icon: Inbox },
-            { key: "suggestions", label: "Suggestions", icon: ClipboardList },
-            { key: "task", label: "Current Task", icon: ListChecks },
+            { key: "tasks", label: "Tasks", icon: ListChecks },
             { key: "access", label: "Access", icon: Settings }
           ] as const).map(item => {
             const Icon = item.icon;

@@ -61,7 +61,7 @@ export type RelevanceAuditItem = {
 export type RelevanceAudit = {
   id: string;
   createdAt: number;
-  engine: "claude-sdk" | "claude-code-cli" | "deepseek" | "local-heuristic";
+  engine: "claude-agent-sdk" | "claude-sdk" | "claude-code-cli" | "deepseek" | "local-heuristic";
   summary: string;
   checkedSignalCount: number;
   checkedSituationCount: number;

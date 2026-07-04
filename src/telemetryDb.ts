@@ -22,7 +22,8 @@ export interface TelemetryDbRecord {
 let pool: pg.Pool | null = null;
 let poolInitialized = false;
 
-function getPool(): pg.Pool | null {
+// Shared by tasksDb.ts — one pool per process regardless of how many stores use it.
+export function getPool(): pg.Pool | null {
   if (!poolInitialized) {
     poolInitialized = true;
     const connectionString = process.env.DATABASE_URL?.trim();

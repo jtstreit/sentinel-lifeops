@@ -6,7 +6,11 @@ import {
   inferTargetTimeFromSignal,
   isExpiredSignal,
   isTaskCandidateSignal,
+  mergeStoredTasks,
   migrateStoredState,
+  normalizeStoredTask,
+  normalizeTask,
+  sanitizeExtractedTasks,
   scoreSignal,
   scoreTelemetryLog,
   STORAGE_SCHEMA_VERSION,
@@ -111,7 +115,7 @@ describe("lifeops scoring rules", () => {
       id: "self",
       source: "screen_text",
       title: "Foreground screen text: com.jackson.sentinellifeops",
-      content: "Refresh phone data | Create task cards | Have AI check",
+      content: "Refresh phone data | Create task cards | Have Claude check",
       packageName: "com.jackson.sentinellifeops",
     });
 
@@ -273,5 +277,95 @@ describe("server-facing heuristic aliases", () => {
     ]);
     expect(tasks[0].targetTime).toBe("15:00");
     expect(tasks[1].targetTime).toBe("14:00");
+  });
+});
+
+describe("AI task sanitation", () => {
+  const aiTask = (overrides: Record<string, unknown> = {}) => ({
+    title: "Send the rent confirmation to Sam",
+    why: "Sam texted asking for the rent to be sent by Friday 5pm.",
+    urgency: "soon",
+    estimatedDurationMinutes: 15,
+    avoidanceTarget: "Opening other apps first",
+    nextPhysicalAction: "Open the banking app",
+    steps: [{ title: "Open the app", durationMinutes: 3 }, { title: "Send and confirm", durationMinutes: 8 }],
+    sourceLogIds: ["log1"],
+    situationId: "sit1",
+    ...overrides,
+  });
+
+  it("carries why/urgency/traceability through normalizeTask and clips long why text", () => {
+    const task = normalizeTask(aiTask({ why: `${"x".repeat(400)}` }));
+    expect(task).not.toBeNull();
+    expect(task!.why).toHaveLength(280);
+    expect(task!.urgency).toBe("soon");
+    expect(task!.sourceLogIds).toEqual(["log1"]);
+    expect(task!.situationId).toBe("sit1");
+  });
+
+  it("drops invalid urgency values instead of storing them", () => {
+    const task = normalizeTask(aiTask({ urgency: "immediately" }));
+    expect(task!.urgency).toBeUndefined();
+  });
+
+  it("strips forged sourceLogIds and situationIds the request never contained", () => {
+    const tasks = sanitizeExtractedTasks(
+      [aiTask({ sourceLogIds: ["log1", "forged-id"], situationId: "forged-sit" })],
+      new Set(["log1"]),
+      new Set(["sit1"])
+    );
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].sourceLogIds).toEqual(["log1"]);
+    expect(tasks[0].situationId).toBeUndefined();
+  });
+
+  it("tolerates garbage input and caps output at 6 tasks", () => {
+    expect(sanitizeExtractedTasks("not an array", new Set(), new Set())).toEqual([]);
+    expect(sanitizeExtractedTasks([null, 42, { title: "" }], new Set(), new Set())).toEqual([]);
+    const many = sanitizeExtractedTasks(
+      Array.from({ length: 10 }, (_, i) => aiTask({ title: `Task number ${i}` })),
+      new Set(["log1"]),
+      new Set(["sit1"])
+    );
+    expect(many).toHaveLength(6);
+  });
+});
+
+describe("stored task normalization and merge", () => {
+  it("preserves completion state and step progress (unlike normalizeTask)", () => {
+    const stored = normalizeStoredTask({
+      id: "t1",
+      title: "Return missed call from Mom",
+      status: "done",
+      isCompleted: true,
+      updatedAtEpochMillis: 111,
+      createdAtEpochMillis: 100,
+      completedAtEpochMillis: 110,
+      steps: [
+        { id: "t1-1", title: "Open Phone", durationMinutes: 2, state: "done" },
+        { id: "t1-2", title: "Call Mom", durationMinutes: 5, state: "done" },
+      ],
+    });
+    expect(stored).not.toBeNull();
+    expect(stored!.status).toBe("done");
+    expect(stored!.isCompleted).toBe(true);
+    expect(stored!.completedAtEpochMillis).toBe(110);
+    expect(stored!.steps.map(step => step.state)).toEqual(["done", "done"]);
+  });
+
+  it("defaults status from isCompleted and rejects tasks without id or title", () => {
+    expect(normalizeStoredTask({ id: "t2", title: "Open task", isCompleted: false }, 500)!.status).toBe("open");
+    expect(normalizeStoredTask({ id: "t3", title: "Done task", isCompleted: true }, 500)!.status).toBe("done");
+    expect(normalizeStoredTask({ title: "No id" })).toBeNull();
+    expect(normalizeStoredTask({ id: "t4" })).toBeNull();
+  });
+
+  it("merges newer-wins by updatedAtEpochMillis in both directions", () => {
+    const older = normalizeStoredTask({ id: "t1", title: "Task", status: "open", updatedAtEpochMillis: 100 })!;
+    const newer = normalizeStoredTask({ id: "t1", title: "Task", status: "done", isCompleted: true, updatedAtEpochMillis: 200 })!;
+    expect(mergeStoredTasks([older], [newer])[0].status).toBe("done");
+    expect(mergeStoredTasks([newer], [older])[0].status).toBe("done");
+    const both = mergeStoredTasks([older], [normalizeStoredTask({ id: "t2", title: "Other", updatedAtEpochMillis: 300 })!]);
+    expect(both.map(task => task.id)).toEqual(["t2", "t1"]);
   });
 });

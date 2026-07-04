@@ -9,15 +9,25 @@ import fs from "node:fs";
 import { buildLocalRelevanceAudit, type RelevanceAudit, type RelevanceAuditItem } from "./src/decisionEngine";
 import {
   extractTasksHeuristic,
+  mergeStoredTasks,
+  normalizeStoredTask,
+  sanitizeExtractedTasks,
   scoreTelemetryLog,
   signalReason,
 } from "./src/lifeopsRules";
+import type { StoredTask } from "./src/types";
 import {
   ensureTelemetrySchema,
   isTelemetryDbEnabled,
   loadTelemetryLogsFromDb,
   saveTelemetryLogsToDb,
 } from "./src/telemetryDb";
+import {
+  ensureTasksSchema,
+  isTasksDbEnabled,
+  loadTasksFromDb,
+  saveTasksToDb,
+} from "./src/tasksDb";
 
 // Load .env with override so the project's .env is authoritative even when an
 // empty/stale ANTHROPIC_API_KEY (or similar) is already present in the ambient
@@ -62,6 +72,7 @@ const DATA_DIR = process.env.SENTINEL_DATA_DIR?.trim()
   ? path.resolve(process.env.SENTINEL_DATA_DIR)
   : path.join(process.cwd(), ".sentinel-lifeops");
 const TELEMETRY_STORE_PATH = path.join(DATA_DIR, "telemetry.json");
+const TASKS_STORE_PATH = path.join(DATA_DIR, "tasks.json");
 const CLAUDE_PROVIDER = (process.env.CLAUDE_PROVIDER || "").trim().toLowerCase();
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-4-6";
 const CLAUDE_CODE_CLI_PATH = process.env.CLAUDE_CODE_CLI_PATH?.trim();
@@ -85,6 +96,7 @@ let claudeLastSuccessAt: string | null = null;
 let claudeLastError: string | null = null;
 let claudeLastProvider: "claude-code-cli" | "claude-sdk" | "deepseek" | null = null;
 let globalTelemetryLogs: TelemetryLog[] = loadTelemetryLogs();
+let globalTasks: StoredTask[] = loadTasksFromFile();
 
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
@@ -93,7 +105,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
     res.setHeader("Vary", "Origin");
   }
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Sentinel-Ingest-Token");
   if (req.method === "OPTIONS") {
     res.sendStatus(204);
@@ -614,6 +626,55 @@ function persistTelemetryLogs() {
   }
 }
 
+// ---- Task list store (additive; entirely separate from the telemetry capture path) ----
+
+function loadTasksFromFile(): StoredTask[] {
+  try {
+    if (!fs.existsSync(TASKS_STORE_PATH)) {
+      return [];
+    }
+    const parsed = JSON.parse(fs.readFileSync(TASKS_STORE_PATH, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(item => normalizeStoredTask(item)).filter((task): task is StoredTask => task !== null).slice(0, 200);
+  } catch (err) {
+    console.warn(`Could not load Sentinel task store: ${getErrorMessage(err)}`);
+    return [];
+  }
+}
+
+function persistTasks() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(TASKS_STORE_PATH, JSON.stringify(globalTasks.slice(0, 200), null, 2));
+  } catch (err) {
+    console.warn(`Could not persist Sentinel task store: ${getErrorMessage(err)}`);
+  }
+}
+
+function persistTasksToDbAsync(tasks: StoredTask[]) {
+  if (!isTasksDbEnabled() || tasks.length === 0) return;
+  void saveTasksToDb(tasks).catch((err) => {
+    console.warn(`Could not write tasks to Postgres: ${getErrorMessage(err)}`);
+  });
+}
+
+async function hydrateTasksFromDb(): Promise<void> {
+  if (!isTasksDbEnabled()) return;
+  try {
+    await ensureTasksSchema();
+    const restored = (await loadTasksFromDb(200))
+      .map(item => normalizeStoredTask(item))
+      .filter((task): task is StoredTask => task !== null);
+    const before = globalTasks.length;
+    globalTasks = mergeStoredTasks(globalTasks, restored);
+    if (globalTasks.length !== before) persistTasks();
+    console.log(`[sentinel-lifeops] Task hydration: ${restored.length} stored, store now ${globalTasks.length}.`);
+    persistTasksToDbAsync(globalTasks);
+  } catch (err) {
+    console.warn(`[sentinel-lifeops] Task hydration failed (continuing file-only): ${getErrorMessage(err)}`);
+  }
+}
+
 function sanitizeTelemetryPayload(payload: any, preserveClientFields = false): TelemetryLog | { error: string } {
   const title = trimField(payload?.title, 160);
   const content = trimField(payload?.content, 2000);
@@ -1014,13 +1075,40 @@ app.post("/api/extract-tasks", async (req, res) => {
     }
 
     const requestContext = getRequestContextDate();
-    const prompt = logs
-      .map((log: any) => `[${log.timestamp || ""}] (${log.source || "action"}) ${log.title || ""}: ${log.content || ""}`)
-      .join("\n");
-    const claudeResults = await askClaudeForJsonArray(
-      `You are an executive-function task extractor. Return JSON only: an array of tasks with title, estimatedDurationMinutes, optional targetTime in HH:MM 24-hour format when explicitly inferable, avoidanceTarget, nextPhysicalAction, and steps. Each step must include title and durationMinutes. Keep tasks concrete and physically actionable. Extract tasks only from concrete requests, deadlines, appointments, meetings, missed calls, or preparation commitments. Do not create tasks from ordinary app usage, foreground app minutes, incoming or outgoing call duration, weather, battery, charging, ads, or vague date words without an action. Current runtime reference: ${requestContext.readable} (${requestContext.iso}).`,
-      prompt,
-    );
+    const situations = Array.isArray(req.body?.situations) ? req.body.situations.slice(0, 8) : [];
+
+    let claudeResults: unknown[] | null;
+    if (situations.length > 0) {
+      // Situation mode: the model sees grouped evidence (situation + its signals), so it can
+      // word each task coherently and say WHY it exists — instead of echoing one log line.
+      const contextJson = JSON.stringify({ situations, logs }, null, 2).slice(0, 16000);
+      claudeResults = await askClaudeForJsonArray(
+        `You are an executive-function task writer for Sentinel LifeOps. You receive the user's grouped phone situations (each with its evidence signals) plus recent task-ready signals. Return JSON only: an array of at most 6 task objects with keys title, why, urgency, targetTime, estimatedDurationMinutes, avoidanceTarget, nextPhysicalAction, steps, sourceLogIds, situationId. title is one short imperative sentence that names the actual person or subject from the evidence. why is 1-2 sentences grounded in the quoted message or event content - never invent facts that are not in the evidence. urgency is "now", "soon", or "later" based on time cues in the evidence. targetTime is HH:MM 24-hour format only when explicitly inferable, otherwise null. steps is 2-5 concrete physical steps, each with title and durationMinutes. sourceLogIds must be copied exactly from the ids of the signals the task is based on. situationId is the id of the situation the task addresses, or null. Extract tasks only from concrete requests, deadlines, appointments, meetings, missed calls, or preparation commitments. Do not create tasks from ordinary app usage, foreground app minutes, incoming or outgoing call duration, weather, battery, charging, ads, or vague date words without an action. Current runtime reference: ${requestContext.readable} (${requestContext.iso}).`,
+        `Sentinel LifeOps context:
+${contextJson}`,
+      );
+      if (claudeResults) {
+        const knownLogIds = new Set<string>(logs.map((log: any) => String(log?.id || "")).filter(Boolean));
+        for (const situation of situations) {
+          const signals = Array.isArray(situation?.signals) ? situation.signals : [];
+          for (const signal of signals) {
+            if (signal?.id) knownLogIds.add(String(signal.id));
+          }
+        }
+        const knownSituationIds = new Set<string>(situations.map((s: any) => String(s?.id || "")).filter(Boolean));
+        const sanitized = sanitizeExtractedTasks(claudeResults, knownLogIds, knownSituationIds);
+        claudeResults = sanitized.length > 0 ? sanitized : null;
+      }
+    } else {
+      // Legacy mode (logs only): unchanged flat-list prompt so old clients behave identically.
+      const prompt = logs
+        .map((log: any) => `[${log.timestamp || ""}] (${log.source || "action"}) ${log.title || ""}: ${log.content || ""}`)
+        .join("\n");
+      claudeResults = await askClaudeForJsonArray(
+        `You are an executive-function task extractor. Return JSON only: an array of tasks with title, estimatedDurationMinutes, optional targetTime in HH:MM 24-hour format when explicitly inferable, avoidanceTarget, nextPhysicalAction, and steps. Each step must include title and durationMinutes. Keep tasks concrete and physically actionable. Extract tasks only from concrete requests, deadlines, appointments, meetings, missed calls, or preparation commitments. Do not create tasks from ordinary app usage, foreground app minutes, incoming or outgoing call duration, weather, battery, charging, ads, or vague date words without an action. Current runtime reference: ${requestContext.readable} (${requestContext.iso}).`,
+        prompt,
+      );
+    }
 
     res.json({ results: claudeResults || extractTasksHeuristic(logs), engine: claudeResults ? claudeLastProvider || "claude-sdk" : "local-heuristic" });
   } catch (err: any) {
@@ -1032,6 +1120,68 @@ app.post("/api/extract-tasks", async (req, res) => {
       warning: claudeLastError,
     });
   }
+});
+
+app.get("/api/tasks", (req, res) => {
+  if (!requestHasValidIngestToken(req) && !isLoopbackRequest(req)) {
+    res.status(401).json({ error: "Invalid or missing Sentinel ingest token" });
+    return;
+  }
+  res.json({ tasks: globalTasks.slice(0, 200), dbPersistent: isTasksDbEnabled() });
+});
+
+app.post("/api/tasks", (req, res) => {
+  if (!requestHasValidIngestToken(req) && !isLoopbackRequest(req)) {
+    res.status(401).json({ error: "Invalid or missing Sentinel ingest token" });
+    return;
+  }
+  const rawTasks = Array.isArray(req.body?.tasks) ? req.body.tasks.slice(0, 50) : [];
+  const incoming = rawTasks
+    .map((item: unknown) => normalizeStoredTask(item))
+    .filter((task: StoredTask | null): task is StoredTask => task !== null);
+  if (incoming.length === 0 && rawTasks.length > 0) {
+    res.status(400).json({ error: "No valid tasks in payload" });
+    return;
+  }
+  globalTasks = mergeStoredTasks(globalTasks, incoming);
+  persistTasks();
+  persistTasksToDbAsync(incoming);
+  // The merged list IS the sync result: the client replaces its local list with this.
+  res.json({ tasks: globalTasks.slice(0, 200), dbPersistent: isTasksDbEnabled(), accepted: incoming.length });
+});
+
+app.patch("/api/tasks/:id", (req, res) => {
+  if (!requestHasValidIngestToken(req) && !isLoopbackRequest(req)) {
+    res.status(401).json({ error: "Invalid or missing Sentinel ingest token" });
+    return;
+  }
+  const taskId = String(req.params.id || "").trim();
+  const existing = globalTasks.find(task => task.id === taskId);
+  if (!existing) {
+    res.status(404).json({ error: "Unknown task id" });
+    return;
+  }
+  const patched = normalizeStoredTask({
+    ...existing,
+    ...(typeof req.body?.status === "string" ? { status: req.body.status } : {}),
+    ...(typeof req.body?.isCompleted === "boolean" ? { isCompleted: req.body.isCompleted } : {}),
+    ...(Array.isArray(req.body?.steps) ? { steps: req.body.steps } : {}),
+    ...(typeof req.body?.targetTime === "string" || req.body?.targetTime === null ? { targetTime: req.body.targetTime } : {}),
+    updatedAtEpochMillis: Number.isFinite(Number(req.body?.updatedAtEpochMillis)) && Number(req.body.updatedAtEpochMillis) > 0
+      ? Number(req.body.updatedAtEpochMillis)
+      : Date.now(),
+    completedAtEpochMillis: req.body?.status === "done" && !existing.completedAtEpochMillis ? Date.now() : existing.completedAtEpochMillis,
+  });
+  if (!patched) {
+    res.status(400).json({ error: "Patch produced an invalid task" });
+    return;
+  }
+  // Same newer-wins rule as everywhere else: a stale patch loses to a newer stored state.
+  globalTasks = mergeStoredTasks(globalTasks, [patched]);
+  persistTasks();
+  persistTasksToDbAsync([patched]);
+  const current = globalTasks.find(task => task.id === taskId) || patched;
+  res.json({ task: current, dbPersistent: isTasksDbEnabled() });
 });
 
 // Re-hydrate the in-memory/file store from Postgres on boot. The Render disk is ephemeral, so
@@ -1059,6 +1209,7 @@ async function hydrateTelemetryFromDb() {
 
 async function start() {
   await hydrateTelemetryFromDb();
+  await hydrateTasksFromDb();
   if (!process.env.SENTINEL_INGEST_TOKEN?.trim()) {
     console.warn(
       "[sentinel-lifeops] SECURITY: SENTINEL_INGEST_TOKEN is empty/unset — token-protected routes will reject all non-loopback callers. Set SENTINEL_INGEST_TOKEN to allow remote ingest.",

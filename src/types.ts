@@ -49,6 +49,8 @@ export interface ReverseStep {
   isCompleted: boolean;
 }
 
+export type TaskUrgency = "now" | "soon" | "later";
+
 export interface ExecutiveTask {
   id: string;
   title: string;
@@ -59,6 +61,23 @@ export interface ExecutiveTask {
   avoidanceTarget: string;
   nextPhysicalAction: string;
   steps: ExecutiveStep[];
+  // AI-authored context (optional, additive): why the task exists, grounded in the
+  // telemetry evidence, plus traceability back to the signals it came from.
+  why?: string;
+  urgency?: TaskUrgency;
+  sourceLogIds?: string[];
+  situationId?: string | null;
+}
+
+export type StoredTaskStatus = "open" | "done" | "dismissed";
+
+// A task as persisted in the shared task list (server Postgres + client localStorage).
+// updatedAtEpochMillis drives newer-wins merge between client and server.
+export interface StoredTask extends ExecutiveTask {
+  status: StoredTaskStatus;
+  createdAtEpochMillis: number;
+  updatedAtEpochMillis: number;
+  completedAtEpochMillis?: number | null;
 }
 
 export interface SentinelEvent {
