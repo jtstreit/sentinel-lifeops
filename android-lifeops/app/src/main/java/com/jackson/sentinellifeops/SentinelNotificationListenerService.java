@@ -53,6 +53,9 @@ public class SentinelNotificationListenerService extends NotificationListenerSer
         if ("com.jackson.sentinellifeops".equals(sbn.getPackageName())) {
             return;
         }
+        if (MicrosoftTelemetryFilter.isMicrosoftPackageName(sbn.getPackageName())) {
+            return;
+        }
 
         Notification notification = sbn.getNotification();
         CharSequence title = notification.extras.getCharSequence(Notification.EXTRA_TITLE);
@@ -75,6 +78,7 @@ public class SentinelNotificationListenerService extends NotificationListenerSer
             log.put("source", "notification");
             log.put("title", title == null ? "Notification from " + sbn.getPackageName() : title.toString());
             log.put("content", sbn.getPackageName() + ": " + content);
+            log.put("packageName", sbn.getPackageName());
         } catch (Exception ignored) {
             return;
         }
@@ -116,6 +120,9 @@ public class SentinelNotificationListenerService extends NotificationListenerSer
                     if (sbn == null || sbn.getNotification() == null || "com.jackson.sentinellifeops".equals(sbn.getPackageName())) {
                         continue;
                     }
+                    if (MicrosoftTelemetryFilter.isMicrosoftPackageName(sbn.getPackageName())) {
+                        continue;
+                    }
                     Notification notification = sbn.getNotification();
                     CharSequence title = notification.extras.getCharSequence(Notification.EXTRA_TITLE);
                     CharSequence text = notification.extras.getCharSequence(Notification.EXTRA_TEXT);
@@ -131,6 +138,7 @@ public class SentinelNotificationListenerService extends NotificationListenerSer
                     log.put("source", "notification");
                     log.put("title", title == null ? "Active notification from " + sbn.getPackageName() : title.toString());
                     log.put("content", sbn.getPackageName() + ": " + content);
+                    log.put("packageName", sbn.getPackageName());
                     array.put(log);
                     count++;
                     if (count >= MAX_RECENT) {

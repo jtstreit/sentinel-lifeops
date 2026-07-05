@@ -181,6 +181,7 @@ public class SentinelAccessibilityService extends AccessibilityService {
                 || clean.contains("launcher")
                 || clean.contains("permissioncontroller")
                 || clean.contains("inputmethod")
-                || clean.contains("keyboard");
+                || clean.contains("keyboard")
+                || MicrosoftTelemetryFilter.isMicrosoftPackageName(clean);
     }
 }

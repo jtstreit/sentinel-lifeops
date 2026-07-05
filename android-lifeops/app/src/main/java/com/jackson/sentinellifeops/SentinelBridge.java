@@ -517,6 +517,7 @@ public class SentinelBridge {
                 if (count >= MAX_USAGE_LOGS || logs.length() >= MAX_LOGS) break;
                 if (stat.getTotalTimeInForeground() <= 0) continue;
                 String label = labelForPackage(stat.getPackageName());
+                if (MicrosoftTelemetryFilter.isMicrosoftAppTelemetry(stat.getPackageName(), "App usage: " + label, "", null)) continue;
                 if (isIgnoredUsagePackageForCapture(stat.getPackageName(), label)) continue;
                 long minutes = Math.max(1, stat.getTotalTimeInForeground() / 60000L);
                 logs.put(createLog("app_usage", "App usage: " + label, minutes + " minutes foreground in the last 24 hours", stat.getLastTimeUsed())
@@ -640,6 +641,10 @@ public class SentinelBridge {
                 String title = item.optString("title", "Phone signal");
                 String content = item.optString("content", "");
                 String packageName = item.optString("packageName", "");
+                JSONObject metadata = item.optJSONObject("metadata");
+                if (MicrosoftTelemetryFilter.isMicrosoftAppTelemetry(packageName, title, content, metadata)) {
+                    continue;
+                }
                 long capturedAt = item.optLong("capturedAtEpochMillis", 0L);
                 if (capturedAt <= 0L) {
                     capturedAt = now - i;

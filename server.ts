@@ -15,6 +15,7 @@ import {
   scoreTelemetryLog,
   signalReason,
 } from "./src/lifeopsRules";
+import { isMicrosoftAppTelemetryLog } from "./src/microsoftTelemetryFilter";
 import type { StoredTask } from "./src/types";
 import {
   ensureTelemetrySchema,
@@ -568,6 +569,9 @@ function sanitizeLoadedTelemetryLogs(parsed: unknown): TelemetryLog[] {
     if ("error" in sanitized) {
       continue;
     }
+    if (isMicrosoftAppTelemetryLog(sanitized)) {
+      continue;
+    }
     valid.push(sanitized);
   }
   return valid;
@@ -899,6 +903,17 @@ app.post("/api/telemetry", (req, res) => {
     res.status(400).json({ error: log.error });
     return;
   }
+  if (isMicrosoftAppTelemetryLog(log)) {
+    res.status(202).json({
+      success: true,
+      filtered: true,
+      reason: "microsoft_app_excluded",
+      stored: globalTelemetryLogs.length,
+      mode: "node-dev-file-store",
+      persistent: true,
+    });
+    return;
+  }
 
   globalTelemetryLogs = [log, ...globalTelemetryLogs].slice(0, 500);
   persistTelemetryLogs();
@@ -920,10 +935,15 @@ app.post("/api/telemetry/bulk", (req, res) => {
 
   const imported: TelemetryLog[] = [];
   const rejected: Array<{ index: number; error: string }> = [];
+  let filtered = 0;
   rawLogs.slice(0, 500).forEach((rawLog: unknown, index: number) => {
     const log = sanitizeTelemetryPayload(rawLog, true);
     if ("error" in log) {
       rejected.push({ index, error: log.error });
+      return;
+    }
+    if (isMicrosoftAppTelemetryLog(log)) {
+      filtered++;
       return;
     }
     imported.push(log);
@@ -939,6 +959,7 @@ app.post("/api/telemetry/bulk", (req, res) => {
   res.status(201).json({
     success: true,
     imported: imported.length,
+    filtered,
     rejected,
     stored: globalTelemetryLogs.length,
     mode: "node-dev-file-store",
