@@ -401,7 +401,7 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
       avoidanceTarget: "Rereading the event instead of preparing what it requires",
       nextPhysicalAction,
       steps: [
-        { id: `${id}-1`, title: "Open the calendar event", durationMinutes: 5, state: "current" },
+        { id: `${id}-1`, title: "Open the calendar event", durationMinutes: 5, state: "current", packageName: log.packageName, source: log.source },
         { id: `${id}-2`, title: "Find the location, time, and required item", durationMinutes: 10, state: "pending" },
         { id: `${id}-3`, title: "Put the first required item where you can see it", durationMinutes: 15, state: "pending" }
       ]
@@ -418,7 +418,7 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
       avoidanceTarget: "Checking unrelated notifications before returning the call",
       nextPhysicalAction,
       steps: [
-        { id: `${id}-1`, title: "Open Phone", durationMinutes: 2, state: "current" },
+        { id: `${id}-1`, title: "Open Phone", durationMinutes: 2, state: "current", packageName: log.packageName, source: log.source },
         { id: `${id}-2`, title: `Call or message ${contactFromTitle(log.title)}`, durationMinutes: 5, state: "pending" },
         { id: `${id}-3`, title: "Write down any follow-up from the call", durationMinutes: 3, state: "pending" }
       ]
@@ -434,7 +434,7 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
     avoidanceTarget: "Opening unrelated apps before finishing this one action",
     nextPhysicalAction,
     steps: [
-      { id: `${id}-1`, title: "Open the source app or thread", durationMinutes: 3, state: "current" },
+      { id: `${id}-1`, title: "Open the source app or thread", durationMinutes: 3, state: "current", packageName: log.packageName, source: log.source },
       { id: `${id}-2`, title: `Act on: ${contentStep}`, durationMinutes: 9, state: "pending" },
       { id: `${id}-3`, title: "Close the loop and return here", durationMinutes: 3, state: "pending" }
     ]

@@ -37,6 +37,9 @@ export interface ExecutiveStep {
   title: string;
   durationMinutes: number;
   state: ExecutiveStepState;
+  // If present, tapping this step can launch the originating Android app.
+  packageName?: string | null;
+  source?: SentinelSource | null;
 }
 
 export interface ReverseStep {

@@ -21,6 +21,7 @@ import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.provider.Telephony;
 import android.webkit.JavascriptInterface;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -407,6 +408,64 @@ public class SentinelBridge {
         intent.setData(Uri.parse("package:" + context.getPackageName()));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         context.startActivity(intent);
+    }
+
+    @JavascriptInterface
+    public void openSourceApp(String packageName, String source) {
+        android.util.Log.d("SentinelBridge", "openSourceApp called packageName=" + packageName + " source=" + source);
+        Intent intent = resolveSourceIntent(packageName, source);
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                context.startActivity(intent);
+                android.util.Log.d("SentinelBridge", "started activity: " + intent);
+            } catch (Exception err) {
+                android.util.Log.w("SentinelBridge", "Failed to start source app", err);
+                Toast.makeText(context, "Could not open source app", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            android.util.Log.w("SentinelBridge", "No launch intent for packageName=" + packageName + " source=" + source);
+            Toast.makeText(context, "Could not open source app", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private Intent resolveSourceIntent(String packageName, String source) {
+        PackageManager pm = context.getPackageManager();
+        if (packageName != null && !packageName.isEmpty()) {
+            Intent intent = pm.getLaunchIntentForPackage(packageName);
+            if (intent != null) return intent;
+        }
+        if ("sms".equals(source)) {
+            return pm.getLaunchIntentForPackage(findInstalledPackage(pm,
+                "com.google.android.apps.messaging",
+                "com.android.messaging",
+                "com.samsung.android.messaging"));
+        }
+        if ("calendar".equals(source)) {
+            return pm.getLaunchIntentForPackage(findInstalledPackage(pm,
+                "com.google.android.calendar",
+                "com.android.calendar",
+                "com.samsung.android.calendar"));
+        }
+        if ("notification".equals(source)) {
+            // Missed-call and call-log notifications often map to the dialer.
+            return pm.getLaunchIntentForPackage(findInstalledPackage(pm,
+                "com.google.android.dialer",
+                "com.android.dialer",
+                "com.samsung.android.dialer"));
+        }
+        return null;
+    }
+
+    private String findInstalledPackage(PackageManager pm, String... candidates) {
+        for (String candidate : candidates) {
+            try {
+                pm.getPackageInfo(candidate, 0);
+                return candidate;
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     private void appendSmsLogs(JSONArray logs, long sinceEpochMillis) {

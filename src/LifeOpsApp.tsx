@@ -7,7 +7,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
-  ClipboardList,
+  Crosshair,
   Inbox,
   ListChecks,
   MessageSquare,
@@ -25,7 +25,9 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ExecutiveTask, SentinelEvent, SlipAutopsy, StoredTask } from "./types";
 import { formatTo12Hour, generateReverseTimeline, minutesToTimeString } from "./cartographer";
-import { InfoCard, Pill, SectionIntro, StatTile } from "./components/ui";
+import { Pill, StatTile } from "./components/ui";
+import { FocusMode } from "./components/FocusMode";
+import { SmartSuggestionCard } from "./components/SmartSuggestionCard";
 import { TaskList } from "./components/TaskList";
 import {
   buildLocalRelevanceAudit,
@@ -64,6 +66,7 @@ type SentinelAndroidBridge = {
   exportTelemetrySnapshotJson?: (baseUrl: string, token: string, forceRefresh: boolean) => string;
   addTelemetryJson: (payloadJson: string) => string;
   extractTasksJson: (logsJson: string) => string;
+  openSourceApp?: (packageName: string, source?: string) => void;
   requestRuntimePermissions: () => void;
   openUsageAccessSettings: () => void;
   openNotificationAccessSettings: () => void;
@@ -376,13 +379,34 @@ export default function LifeOpsApp() {
   const [askEngine, setAskEngine] = useState<RelevanceAudit["engine"] | null>(null);
   const [isAsking, setIsAsking] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [serverHealth, setServerHealth] = useState<{ modelProvider?: string; modelRuntimeStatus?: string; claudeLastError?: string | null } | null>(null);
+  const [serverHealth, setServerHealth] = useState<{
+    modelProvider?: string;
+    modelRuntimeStatus?: string;
+    model?: string | null;
+    claudeLastError?: string | null;
+    claudeLastSuccessAt?: string | null;
+    claudeLastProvider?: string | null;
+    mode?: string;
+    bindHost?: string;
+    dbPersistent?: boolean;
+    ingestAuthRequired?: boolean;
+    aiAuth?: {
+      anthropicKeyPresent?: boolean;
+      anthropicKeyLooksLikeApiKey?: boolean;
+      anthropicCredentialShape?: string;
+      anthropicAuthTokenPresent?: boolean;
+      deepseekKeyPresent?: boolean;
+      claudeCodeCliConfigured?: boolean;
+      lastProviderUsed?: string | null;
+    };
+  } | null>(null);
   const [androidBridgeStatus, setAndroidBridgeStatus] = useState<Record<string, any> | null>(null);
   const [notice, setNotice] = useState<Notice | null>({ text: "Ready. Refresh phone data, then pick one real task when a useful signal appears.", severity: "info" });
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
   const [showStuckPanel, setShowStuckPanel] = useState(false);
   const [showDelayModal, setShowDelayModal] = useState(false);
   const [showBridgeDiagnostics, setShowBridgeDiagnostics] = useState(false);
+  const [focusModeOpen, setFocusModeOpen] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDuration, setNewTaskDuration] = useState(15);
   const [newTaskNextPhysical, setNewTaskNextPhysical] = useState("");
@@ -647,9 +671,9 @@ export default function LifeOpsApp() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  // Surface the AI route's health (provider + last error) on the Suggestions screen.
+  // Surface the AI route's health (provider + last error) on Tasks and Setup.
   useEffect(() => {
-    if (!canUseLifeOpsServer || activeTab !== "tasks") return;
+    if (!canUseLifeOpsServer || (activeTab !== "tasks" && activeTab !== "access")) return;
     let cancelled = false;
     fetch(`${askApiBase || ""}/api/health`)
       .then(response => (response.ok ? response.json() : null))
@@ -1057,11 +1081,12 @@ export default function LifeOpsApp() {
     setNotice({ text: "Removed from the task list.", severity: "info" });
   };
 
-  // "Focus" = make this the current task. The active task is the most recently
-  // touched open task, so bumping updatedAt is enough.
+  // "Focus" = make this the current task and open fullscreen Focus Mode.
+  // The active task is the most recently touched open task, so bumping updatedAt is enough.
   const focusStoredTask = (task: StoredTask) => {
     applyTaskChange(task, {});
-    setNotice({ text: `Current task: ${task.title}`, severity: "info" });
+    setFocusModeOpen(true);
+    setNotice({ text: `Focus: ${task.title}`, severity: "info" });
   };
 
   const handleMarkNextStepDone = () => {
@@ -1397,8 +1422,17 @@ export default function LifeOpsApp() {
           {canUseLifeOpsServer && serverHealth && (
             <p className="mt-2 text-xs leading-relaxed text-slate-500">
               AI route: {serverHealth.modelProvider || "unknown"}
-              {serverHealth.modelRuntimeStatus ? ` (${serverHealth.modelRuntimeStatus})` : ""}
-              {serverHealth.claudeLastError ? ` - last error: ${clipForClaudeCheck(serverHealth.claudeLastError, 140)}` : ""}
+              {serverHealth.model ? ` · ${serverHealth.model}` : ""}
+              {serverHealth.modelRuntimeStatus ? ` · ${serverHealth.modelRuntimeStatus}` : ""}
+              {serverHealth.claudeLastError ? ` · last error: ${clipForClaudeCheck(serverHealth.claudeLastError, 140)}` : ""}
+              {serverHealth.aiAuth && !serverHealth.aiAuth.anthropicKeyPresent && !serverHealth.aiAuth.deepseekKeyPresent
+                ? " · no AI credential configured"
+                : ""}
+              {serverHealth.aiAuth?.anthropicCredentialShape === "oauth_or_other"
+                ? " · Claude OAuth credential"
+                : serverHealth.aiAuth?.anthropicCredentialShape === "api_key"
+                  ? " · Anthropic API key"
+                  : ""}
             </p>
           )}
         </div>
@@ -1457,88 +1491,20 @@ export default function LifeOpsApp() {
     </section>
   );
 
-  const renderTaskCard = (task: ExecutiveTask) => (
-    <article key={task.id} className="rounded-lg border border-cyan-400/25 bg-slate-900 p-4 shadow-sm">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-bold text-cyan-200">Suggested task</span>
-        {task.urgency && (
-          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
-            task.urgency === "now" ? "bg-rose-500/10 text-rose-200" : task.urgency === "soon" ? "bg-amber-400/10 text-amber-200" : "bg-slate-800 text-slate-300"
-          }`}>
-            {task.urgency}
-          </span>
-        )}
-        <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">{task.estimatedDurationMinutes} min</span>
-        {(taskTargetOverrides[task.id] || task.targetTime) && (
-          <span className="rounded-full bg-amber-400/10 px-2.5 py-1 text-xs font-bold text-amber-200">
-            {formatTo12Hour(taskTargetOverrides[task.id] || task.targetTime || "")}
-          </span>
-        )}
-      </div>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-bold text-ink">{task.title}</h3>
-          {task.why && <p className="mt-2 text-sm leading-relaxed text-slate-400">{task.why}</p>}
-          <p className="mt-2 text-sm leading-relaxed text-slate-300">{task.nextPhysicalAction}</p>
-        </div>
-      </div>
-      {(() => {
-        const situation = smartSituationByTaskId.get(task.id) || (task.associatedAnchorId ? smartSituationByTaskId.get(task.associatedAnchorId) : undefined);
-        if (!situation) return null;
-        return (
-          <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-            <div className="flex flex-wrap gap-2">
-              <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-bold text-cyan-200">{situation.confidence} confidence</span>
-              <span className="rounded-full bg-amber-400/10 px-2.5 py-1 text-xs font-bold text-amber-200">{situation.urgency}</span>
-              <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">Priority {Math.round(situation.priorityScore)}</span>
-            </div>
-            <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">Why this is here</p>
-            <ul className="mt-2 space-y-1 text-sm leading-relaxed text-slate-300">
-              {situation.why.slice(0, 3).map(reason => <li key={reason}>{reason}</li>)}
-            </ul>
-            <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">Evidence</p>
-            <p className="mt-2 text-sm leading-relaxed text-slate-400">{situation.evidence.slice(0, 2).join(" | ")}</p>
-            {situation.needsModelReview && (
-              <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-950/20 p-2 text-xs leading-relaxed text-amber-100">
-                Ambiguous. Ask AI can inspect the loaded context before you accept it.
-              </p>
-            )}
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button onClick={() => applySituationFeedback(situation, "useful")} className="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs font-bold text-emerald-200 hover:bg-emerald-950/30">Useful</button>
-              <button onClick={() => applySituationFeedback(situation, "later")} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Later</button>
-              <button onClick={() => applySituationFeedback(situation, "too_vague")} className="rounded-lg border border-amber-500/30 px-3 py-2 text-xs font-bold text-amber-200 hover:bg-amber-950/30">Too vague</button>
-              <button onClick={() => applySituationFeedback(situation, "not_task")} className="rounded-lg border border-rose-500/30 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-950/30">Not a task</button>
-            </div>
-          </div>
-        );
-      })()}
-      <label className="mt-4 block">
-        <span className="text-sm font-bold text-slate-300">Target time</span>
-        <input
-          type="time"
-          value={taskTargetOverrides[task.id] ?? task.targetTime ?? ""}
-          onChange={event => setTaskTargetOverrides(prev => ({ ...prev, [task.id]: event.target.value }))}
-          className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-        />
-      </label>
-      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-        <ActionButton
-          icon={CheckCircle2}
-          label="Start this task"
-          hint="Moves it to Current Task"
-          tone="green"
-          onClick={() => approveTaskCandidate(task)}
-        />
-        <ActionButton
-          icon={Trash2}
-          label="Not a task"
-          hint="Dismiss and suppress"
-          tone="slate"
-          onClick={() => dismissTaskCard(task)}
-        />
-      </div>
-    </article>
-  );
+  const renderTaskCard = (task: ExecutiveTask) => {
+    const situation = smartSituationByTaskId.get(task.id)
+      || (task.associatedAnchorId ? smartSituationByTaskId.get(task.associatedAnchorId) : undefined);
+    return (
+      <SmartSuggestionCard
+        key={task.id}
+        task={task}
+        situation={situation}
+        targetTime={taskTargetOverrides[task.id] || task.targetTime || undefined}
+        onApprove={() => approveTaskCandidate(task)}
+        onDismiss={() => dismissTaskCard(task)}
+      />
+    );
+  };
 
   const renderSignalCard = (signal: SentinelEvent) => {
     const Icon = sourceIcon(signal.source);
@@ -1625,101 +1591,69 @@ export default function LifeOpsApp() {
           transition={{ duration: 0.12 }}
         >
         {activeTab === "today" && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-                <SectionIntro
-                  kicker="What should I do now?"
-                  title={
-                    activeTask
-                      ? activeTask.title
-                      : visibleSuggestionTasks.length > 0
-                        ? "Pick one suggested task"
-                        : "No current task yet"
-                  }
-                >
-                  {activeTask
-                    ? nextStep?.title || activeTask.nextPhysicalAction
-                    : visibleSuggestionTasks.length > 0
-                      ? `There are ${visibleSuggestionTasks.length} smart suggestions from related phone signals. Choose one so the app has something concrete to guide.`
-                      : "Refresh phone data. If a message, visible app text, missed call, calendar event, or deadline has a real action in it, Sentinel will offer a task card."}
-                </SectionIntro>
-                <div className="grid min-w-0 grid-cols-2 gap-3 lg:w-72">
-                  <StatTile label="Task signals" value={taskReadySignals.length} accent />
-                  <StatTile label="Last pull" value={formatRelativeTime(lastSignalTime)} />
+          <div className="space-y-4">
+            {activeTask ? (
+              <section className="rounded-2xl border border-emerald-400/25 bg-slate-900 p-5">
+                <p className="text-sm font-bold text-emerald-200">Current task</p>
+                <h2 className="mt-2 text-3xl font-bold leading-tight text-ink">{activeTask.title}</h2>
+                <p className="mt-3 text-lg text-cyan-200/90">{nextStep?.title || activeTask.nextPhysicalAction}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {activeTask.targetTime && <Pill tone="warn">{formatTo12Hour(activeTask.targetTime)}</Pill>}
+                  <Pill tone="neutral">{activeTask.estimatedDurationMinutes}m</Pill>
                 </div>
-              </div>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
-                {activeTask ? (
-                  <>
-                    <ActionButton icon={Check} label="Mark next step done" hint="Advances the checklist" tone="green" onClick={handleMarkNextStepDone} disabled={!nextStep} />
-                    <ActionButton icon={AlertTriangle} label="I'm stuck" hint="Shows only the next few actions" tone="amber" onClick={() => setShowStuckPanel(true)} />
-                    <ActionButton icon={TimerReset} label="I'm running late" hint="Shrinks the plan to essentials" tone="red" onClick={handleRunningLate} />
-                  </>
-                ) : (
-                  <>
-                    <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh phone data"} hint="Combs the last 24 hours where Android exposes history" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
-                    <ActionButton icon={Sparkles} label="Create suggestions" hint="Only uses actionable phone signals" tone="ai" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                    <ActionButton icon={Plus} label="Add task manually" hint="Backup when Android cannot expose the source" tone="slate" onClick={() => setShowAddTaskModal(true)} />
-                  </>
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h2 className="text-lg font-bold text-ink">Quick note</h2>
-              <p className="mt-1 text-sm text-slate-400">Capture a thought or reminder as an owner note. It is stored and exported like any other phone signal.</p>
-              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
-                <textarea
-                  value={quickNoteText}
-                  onChange={event => setQuickNoteText(event.target.value)}
-                  rows={2}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-                  placeholder="Type the note. If it has a real action, it also becomes a task suggestion."
-                />
-                <button
-                  onClick={handleAddQuickNote}
-                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300 md:self-end"
-                >
-                  Save note
-                </button>
-              </div>
-            </section>
-
-            {driftSignal && activeTask && (
-              <section className="rounded-xl border border-amber-400/30 bg-amber-950/20 p-5">
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="mt-5 grid gap-3 md:grid-cols-4">
+                  <ActionButton icon={Check} label="Step done" hint="Advance checklist" tone="green" onClick={handleMarkNextStepDone} disabled={!nextStep} />
+                  <ActionButton icon={AlertTriangle} label="I'm stuck" hint="Simplify next actions" tone="amber" onClick={() => setShowStuckPanel(true)} />
+                  <ActionButton icon={TimerReset} label="Running late" hint="Shrink the route" tone="red" onClick={handleRunningLate} />
+                  <ActionButton icon={Crosshair} label="Focus" hint="Fullscreen current task" tone="cyan" onClick={() => setFocusModeOpen(true)} />
+                </div>
+              </section>
+            ) : visibleSuggestionTasks.length > 0 ? (
+              <section className="rounded-2xl border border-cyan-400/25 bg-slate-900 p-5">
+                <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-bold text-amber-200">Possible phone drift</p>
-                    <h3 className="mt-1 text-lg font-bold text-ink">{cleanSignalFragment(driftSignal.title, 90)}</h3>
-                    <p className="mt-2 text-sm text-amber-100/80">This is not a new task. It is a warning that app activity may be pulling you away from the current task.</p>
+                    <p className="text-sm font-bold text-cyan-200">Top suggestion</p>
+                    <h2 className="text-2xl font-bold text-ink">Start with this</h2>
                   </div>
-                  <ActionButton icon={ChevronRight} label="Return to task" hint="Shows the next real action" tone="amber" onClick={handleReturnFromDrift} />
+                  <button onClick={() => setActiveTab("signals")} className="text-sm font-semibold text-primary hover:opacity-80">See all</button>
+                </div>
+                <div className="mt-4">{renderTaskCard(visibleSuggestionTasks[0])}</div>
+              </section>
+            ) : (
+              <section className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
+                <p className="text-xl font-bold text-ink">No task yet</p>
+                <p className="mt-2 text-sm text-slate-400">Find tasks from your phone signals, or add one manually.</p>
+                <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+                  <ActionButton icon={Sparkles} label="Find tasks" hint="From phone signals" tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
+                  <ActionButton icon={Plus} label="Add task" hint="Manual" tone="slate" onClick={() => setShowAddTaskModal(true)} />
                 </div>
               </section>
             )}
 
-            <section className="grid gap-4 lg:grid-cols-3">
-              <InfoCard icon={Smartphone} title="Phone data">
-                <dl className="grid grid-cols-2 gap-3 text-sm">
-                  <div><dt className="text-ink-faint">SMS</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.sms || 0}</dd></div>
-                  <div><dt className="text-ink-faint">Calendar</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.calendar || 0}</dd></div>
-                  <div><dt className="text-ink-faint">Notifications</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.notification || 0}</dd></div>
-                  <div><dt className="text-ink-faint">Screen text</dt><dd className="text-xl font-bold text-ink">{telemetryCounts.screen_text || 0}</dd></div>
-                </dl>
-              </InfoCard>
-              <InfoCard icon={ListChecks} title="Suggestions" iconClass="text-accent">
-                <p className="text-3xl font-bold text-ink">{visibleSuggestionTasks.length}</p>
-                <p className="mt-2 text-sm text-ink-muted">Suggested task cards waiting for a decision.</p>
-                <button onClick={() => setActiveTab("tasks")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Open Tasks</button>
-              </InfoCard>
-              <InfoCard icon={Settings} title="Access" iconClass="text-amber-300">
-                <p className="text-3xl font-bold text-ink">{readyPermissionCount}/4</p>
-                <p className="mt-2 text-sm text-ink-muted">Access groups ready on Android.</p>
-                <button onClick={() => setActiveTab("access")} className="mt-4 text-sm font-semibold text-primary hover:opacity-80">Check access</button>
-              </InfoCard>
-            </section>
+            {driftSignal && activeTask && (
+              <section className="rounded-xl border border-amber-400/30 bg-amber-950/20 p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-bold text-amber-200">Possible phone drift</p>
+                    <p className="mt-1 text-sm text-amber-100/80">{cleanSignalFragment(driftSignal.title, 90)}</p>
+                  </div>
+                  <ActionButton icon={ChevronRight} label="Return to task" hint="Back to current task" tone="amber" onClick={handleReturnFromDrift} />
+                </div>
+              </section>
+            )}
+
+            {!activeTask && (
+              <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-400">
+                    {(telemetryCounts.sms || 0) + (telemetryCounts.calendar || 0) + (telemetryCounts.notification || 0) + (telemetryCounts.screen_text || 0)} phone signals loaded
+                  </span>
+                  <button onClick={() => syncTelemetryLogs(true)} className="text-sm font-semibold text-primary hover:opacity-80">
+                    {isSyncing ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+              </section>
+            )}
           </div>
         )}
 
@@ -1766,17 +1700,24 @@ export default function LifeOpsApp() {
                       className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
                     />
                   </label>
-                  <div className="mt-5 grid gap-3 md:grid-cols-4">
+                  <div className="mt-5 grid gap-3 md:grid-cols-5">
                     <ActionButton icon={Check} label="Step done" hint="Advance checklist" tone="green" onClick={handleMarkNextStepDone} disabled={!nextStep} />
                     <ActionButton icon={AlertTriangle} label="I'm stuck" hint="Simplify next actions" tone="amber" onClick={() => setShowStuckPanel(true)} />
                     <ActionButton icon={TimerReset} label="Running late" hint="Shrink the route" tone="red" onClick={handleRunningLate} />
+                    <ActionButton icon={Crosshair} label="Focus" hint="Fullscreen current task" tone="cyan" onClick={() => setFocusModeOpen(true)} />
                     <ActionButton icon={CheckCircle2} label="Finish task" hint="Mark all done" tone="slate" onClick={handleFinishTask} />
                   </div>
                   <div className="mt-5 space-y-3">
                     {activeTask.steps.map((step, index) => (
                       <button
                         key={step.id}
-                        onClick={() => step.state !== "done" && updateTaskStepState(activeTask.id, step.id)}
+                        onClick={() => {
+                          if (step.state === "done") return;
+                          if (androidBridge?.openSourceApp) {
+                            androidBridge.openSourceApp(step.packageName || "", step.source || undefined);
+                          }
+                          updateTaskStepState(activeTask.id, step.id);
+                        }}
                         className={`flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
                           step.state === "done" ? "border-emerald-700 bg-emerald-950/30" :
                           step.state === "current" ? "border-cyan-400/50 bg-cyan-950/20" :
@@ -1858,17 +1799,23 @@ export default function LifeOpsApp() {
             {renderClaudeReviewPanel()}
             {renderRelevanceAuditPanel()}
 
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+
+          </div>
+        )}
+
+        {activeTab === "signals" && (
+          <div className="space-y-5">
+            <section className="rounded-xl border border-cyan-400/25 bg-slate-900 p-5">
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <h2 className="text-lg font-bold text-ink">Suggestions</h2>
-                  <p className="mt-1 text-sm text-slate-400">Accept a card to add it to the task list, or mark it as not a task.</p>
+                  <p className="text-sm font-bold text-cyan-200">Suggestions</p>
+                  <h2 className="mt-2 text-2xl font-bold text-ink">Tasks your phone is hinting at</h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Tap the checkmark to add a task. Tap the X to dismiss it.</p>
                 </div>
-                {visibleSuggestionTasks.length > 0 && (
-                  <button onClick={() => setExtractedTasks([])} className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800">
-                    Clear suggestion cards
-                  </button>
-                )}
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh"} hint="Scan the phone" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
+                  <ActionButton icon={Sparkles} label={isExtractingTasks ? "Finding..." : "Find tasks"} hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
+                </div>
               </div>
 
               <div className="mt-4 space-y-3">
@@ -1885,29 +1832,10 @@ export default function LifeOpsApp() {
                 )}
                 {!isExtractingTasks && (visibleSuggestionTasks.length > 0 ? visibleSuggestionTasks.map(renderTaskCard) : (
                   <EmptyState
-                    title="No suggested tasks yet"
-                    body={taskReadySignals.length > 0 ? "Task-ready phone language is available. Build cards to turn it into suggestions." : "Refresh phone data to look for messages, missed calls, calendar events, notifications, and screen text with a real action."}
+                    title="No suggestions yet"
+                    body={taskReadySignals.length > 0 ? "Phone signals are loaded. Tap Find tasks to turn them into suggestions." : "Refresh to look for messages, missed calls, calendar events, notifications, and screen text with a real action."}
                   />
                 ))}
-              </div>
-            </section>
-          </div>
-        )}
-
-        {activeTab === "signals" && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="text-sm font-bold text-cyan-200">Inbox</p>
-                  <h2 className="mt-2 text-2xl font-bold text-ink">Raw phone material Sentinel can see</h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Use this page to refresh Android data, paste a missing item, and inspect what was captured. Suggested tasks live on their own tab.</p>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="24-hour scan plus current screen text" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
-                  <ActionButton icon={Sparkles} label="Build suggestions" hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                  <ActionButton icon={ClipboardList} label="Open Tasks" hint={`${visibleSuggestionTasks.length} suggestion cards`} tone="slate" onClick={() => setActiveTab("tasks")} />
-                </div>
               </div>
             </section>
 
@@ -1976,7 +1904,7 @@ export default function LifeOpsApp() {
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <p className="text-sm font-bold text-cyan-200">Access</p>
+                  <p className="text-sm font-bold text-cyan-200">Setup</p>
                   <h2 className="mt-2 text-2xl font-bold text-ink">{readyPermissionCount}/4 access groups ready</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">These buttons open Android settings. After granting access, come back here and tap Refresh status.</p>
                 </div>
@@ -2003,6 +1931,98 @@ export default function LifeOpsApp() {
                   </button>
                 </article>
               ))}
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-ink">Server &amp; AI health</h3>
+                  <p className="mt-2 text-sm text-slate-400">
+                    {canUseLifeOpsServer
+                      ? "Live status from the Render/API host used for AI and telemetry ingest."
+                      : "No server URL configured in this build. AI falls back to local rules."}
+                  </p>
+                </div>
+                <ActionButton
+                  icon={RefreshCw}
+                  label="Refresh health"
+                  hint="Re-check /api/health"
+                  tone="slate"
+                  disabled={!canUseLifeOpsServer}
+                  onClick={() => {
+                    if (!canUseLifeOpsServer) return;
+                    fetch(`${askApiBase || ""}/api/health`)
+                      .then(response => (response.ok ? response.json() : null))
+                      .then(data => {
+                        if (data && typeof data === "object") {
+                          setServerHealth(data);
+                          setNotice({ text: `Server health: ${data.modelRuntimeStatus || data.modelProvider || "ok"}`, severity: "info" });
+                        }
+                      })
+                      .catch(() => {
+                        setServerHealth({
+                          modelProvider: "unreachable",
+                          modelRuntimeStatus: `no response from ${askApiBase || "the local server"}`,
+                        });
+                        setNotice({ text: "Server health check failed.", severity: "error" });
+                      });
+                  }}
+                />
+              </div>
+              {serverHealth ? (
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <p className="text-slate-500">Provider</p>
+                    <p className="font-bold text-ink">{serverHealth.modelProvider || "unknown"}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <p className="text-slate-500">Runtime</p>
+                    <p className="font-bold text-ink">{serverHealth.modelRuntimeStatus || "unknown"}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <p className="text-slate-500">Model</p>
+                    <p className="font-bold text-ink">{serverHealth.model || "—"}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <p className="text-slate-500">Mode</p>
+                    <p className="font-bold text-ink">{serverHealth.mode || "—"}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <p className="text-slate-500">AI credential</p>
+                    <p className="font-bold text-ink">
+                      {serverHealth.aiAuth?.anthropicCredentialShape === "api_key"
+                        ? "Anthropic API key"
+                        : serverHealth.aiAuth?.anthropicCredentialShape === "oauth_or_other"
+                          ? "Claude OAuth"
+                          : serverHealth.aiAuth?.anthropicKeyPresent
+                            ? "Present"
+                            : serverHealth.aiAuth?.deepseekKeyPresent
+                              ? "DeepSeek only"
+                              : "Missing"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <p className="text-slate-500">Last AI success</p>
+                    <p className="font-bold text-ink">
+                      {serverHealth.claudeLastSuccessAt
+                        ? formatRelativeTime(Date.parse(serverHealth.claudeLastSuccessAt) || undefined)
+                        : "Never this boot"}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-slate-500">Health not loaded yet.</p>
+              )}
+              {serverHealth?.claudeLastError && (
+                <p className="mt-3 rounded-lg border border-rose-500/30 bg-rose-950/20 p-3 text-sm text-rose-100">
+                  Last AI error: {clipForClaudeCheck(serverHealth.claudeLastError, 240)}
+                </p>
+              )}
+              {serverHealth?.aiAuth?.anthropicCredentialShape === "oauth_or_other" && (
+                <p className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-950/20 p-3 text-sm text-cyan-100">
+                  Using a Claude OAuth credential (expected for agent-sdk). If you switched Claude accounts, update the OAuth token/env on Render and redeploy.
+                </p>
+              )}
             </section>
 
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
@@ -2061,10 +2081,10 @@ export default function LifeOpsApp() {
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-800 bg-surface/95 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur">
         <div className="mx-auto grid max-w-5xl grid-cols-4 gap-1 sm:gap-2">
           {([
-            { key: "today", label: "Today", icon: Clock },
+            { key: "today", label: "Now", icon: Clock },
             { key: "signals", label: "Inbox", icon: Inbox },
             { key: "tasks", label: "Tasks", icon: ListChecks },
-            { key: "access", label: "Access", icon: Settings }
+            { key: "access", label: "Setup", icon: Settings }
           ] as const).map(item => {
             const Icon = item.icon;
             const active = activeTab === item.key;
@@ -2203,6 +2223,22 @@ export default function LifeOpsApp() {
           </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {focusModeOpen && activeTask && (
+          <FocusMode
+            key="focus"
+            task={activeTask}
+            nextStep={nextStep}
+            driftSignal={driftSignal}
+            onClose={() => setFocusModeOpen(false)}
+            onStepDone={handleMarkNextStepDone}
+            onStuck={() => setShowStuckPanel(true)}
+            onRunningLate={handleRunningLate}
+            onFinish={handleFinishTask}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

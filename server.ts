@@ -522,6 +522,31 @@ function getModelRuntimeStatus() {
   return "configured_not_yet_verified";
 }
 
+function getAiAuthDiagnostics() {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() || "";
+  const authToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim() || "";
+  const deepseekKey = DEEPSEEK_API_KEY;
+  // Claude OAuth / agent-sdk tokens are valid credentials and usually do not
+  // start with sk-ant-. Treat key presence as the signal; shape is informational.
+  const credentialShape = anthropicKey.startsWith("sk-ant-")
+    ? "api_key"
+    : anthropicKey
+      ? "oauth_or_other"
+      : authToken
+        ? "auth_token"
+        : "missing";
+  return {
+    anthropicKeyPresent: Boolean(anthropicKey),
+    anthropicKeyLength: anthropicKey.length,
+    anthropicKeyLooksLikeApiKey: anthropicKey.startsWith("sk-ant-"),
+    anthropicCredentialShape: credentialShape,
+    anthropicAuthTokenPresent: Boolean(authToken),
+    deepseekKeyPresent: Boolean(deepseekKey),
+    claudeCodeCliConfigured: hasClaudeCodeCli(),
+    lastProviderUsed: claudeLastProvider,
+  };
+}
+
 // Constant-time string equality. Hashing both sides to a fixed-width digest
 // avoids leaking length and lets timingSafeEqual compare equal-length buffers.
 function constantTimeEquals(a: string, b: string): boolean {
@@ -838,6 +863,7 @@ function sanitizeClaudeAuditItems(rawItems: unknown[], fallback: RelevanceAudit,
 
 app.get("/api/health", (req, res) => {
   const provider = getConfiguredProvider();
+  const auth = getAiAuthDiagnostics();
   res.json({
     ok: true,
     service: "sentinel-lifeops",
@@ -845,13 +871,24 @@ app.get("/api/health", (req, res) => {
     modelRuntimeStatus: getModelRuntimeStatus(),
     model: getConfiguredModel(),
     fallbackProviders: getFallbackProviders(),
-    requestedProvider: CLAUDE_PROVIDER || null,
+    requestedProvider: CLAUDE_PROVIDER || AI_PROVIDER || null,
     claudeLastSuccessAt,
     claudeLastError,
-    mode: "node-dev",
+    claudeLastProvider,
+    mode: process.env.NODE_ENV === "production" ? "production" : "node-dev",
     persistent: true,
+    dbPersistent: isTelemetryDbEnabled(),
     ingestAuthRequired: Boolean(process.env.SENTINEL_INGEST_TOKEN),
     bindHost: SERVER_HOST,
+    aiAuth: {
+      anthropicKeyPresent: auth.anthropicKeyPresent,
+      anthropicKeyLooksLikeApiKey: auth.anthropicKeyLooksLikeApiKey,
+      anthropicCredentialShape: auth.anthropicCredentialShape,
+      anthropicAuthTokenPresent: auth.anthropicAuthTokenPresent,
+      deepseekKeyPresent: auth.deepseekKeyPresent,
+      claudeCodeCliConfigured: auth.claudeCodeCliConfigured,
+      lastProviderUsed: auth.lastProviderUsed,
+    },
     timestamp: new Date().toISOString(),
   });
 });
@@ -863,14 +900,24 @@ app.get("/api/config-diagnostics", (req, res) => {
   }
 
   const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() || "";
+  const auth = getAiAuthDiagnostics();
   res.json({
     ok: true,
     modelProvider: getConfiguredProvider(),
     model: getConfiguredModel(),
     fallbackProviders: getFallbackProviders(),
-    requestedProvider: CLAUDE_PROVIDER || null,
-    anthropicKeyPresent: Boolean(anthropicKey),
-    anthropicKeyLength: anthropicKey.length,
+    requestedProvider: CLAUDE_PROVIDER || AI_PROVIDER || null,
+    modelRuntimeStatus: getModelRuntimeStatus(),
+    claudeLastSuccessAt,
+    claudeLastError,
+    claudeLastProvider,
+    anthropicKeyPresent: auth.anthropicKeyPresent,
+    anthropicKeyLength: auth.anthropicKeyLength,
+    anthropicKeyLooksLikeApiKey: auth.anthropicKeyLooksLikeApiKey,
+    anthropicCredentialShape: auth.anthropicCredentialShape,
+    anthropicAuthTokenPresent: auth.anthropicAuthTokenPresent,
+    deepseekKeyPresent: auth.deepseekKeyPresent,
+    claudeCodeCliConfigured: auth.claudeCodeCliConfigured,
     anthropicKeySha256Prefix: anthropicKey
       ? crypto.createHash("sha256").update(anthropicKey).digest("hex").slice(0, 16)
       : null,

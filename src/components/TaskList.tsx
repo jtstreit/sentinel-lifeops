@@ -61,6 +61,15 @@ export function TaskList({
     { key: "later", label: "Later" }
   ];
 
+  const groups = useMemo(() => {
+    const keys: TaskUrgency[] = filter === "all" ? ["now", "soon", "later"] : [filter];
+    return keys.map(key => ({
+      key,
+      label: key.charAt(0).toUpperCase() + key.slice(1),
+      tasks: openTasks.filter(task => task.urgency === key)
+    }));
+  }, [openTasks, filter]);
+
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -95,20 +104,31 @@ export function TaskList({
         </div>
       )}
 
-      <div className="mt-4 space-y-3">
-        <AnimatePresence initial={false} mode={reduceMotion ? "wait" : "sync"}>
-          {openTasks.map(task => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              fallbackWhy={fallbackWhyFor?.(task)}
-              onToggleComplete={onToggleComplete}
-              onToggleStep={onToggleStep}
-              onDismiss={onDismiss}
-              onFocus={onFocus}
-            />
-          ))}
-        </AnimatePresence>
+      <div className="mt-4 space-y-5">
+        {groups.map(group =>
+          group.tasks.length > 0 ? (
+            <div key={group.key}>
+              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                {group.label} <span className="text-slate-600">({group.tasks.length})</span>
+              </h3>
+              <div className="space-y-3">
+                <AnimatePresence initial={false} mode={reduceMotion ? "wait" : "sync"}>
+                  {group.tasks.map(task => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      fallbackWhy={fallbackWhyFor?.(task)}
+                      onToggleComplete={onToggleComplete}
+                      onToggleStep={onToggleStep}
+                      onDismiss={onDismiss}
+                      onFocus={onFocus}
+                    />
+                  ))}
+                </AnimatePresence>
+              </div>
+            </div>
+          ) : null
+        )}
         {openTasks.length === 0 && !isLoading && (
           <div className="rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-5">
             <h3 className="text-base font-bold text-slate-100">{filter === "all" ? "No open tasks" : `Nothing marked "${filter}"`}</h3>
