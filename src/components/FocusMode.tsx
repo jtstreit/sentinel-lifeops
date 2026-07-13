@@ -6,7 +6,7 @@ import {
   TimerReset,
   X,
 } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { formatTo12Hour } from "../cartographer";
 import type { SentinelEvent, StoredTask } from "../types";
 
@@ -38,53 +38,53 @@ export function FocusMode({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
-      className="fixed inset-0 z-50 flex flex-col bg-slate-950"
+      className="fixed inset-0 z-50 flex flex-col bg-bg"
     >
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <span className="text-sm font-bold text-cyan-200">Focus</span>
+      <div className="border-b border-primary/15 bg-bg/90 pt-[max(1rem,env(safe-area-inset-top))] backdrop-blur-xl">
+      <div className="mx-auto flex w-full max-w-lg items-center justify-between px-4 py-3">
+        <span className="text-sm font-semibold text-primary">Focus mode</span>
         <button
           onClick={onClose}
-          className="rounded-lg p-2 text-slate-400 hover:bg-slate-900 hover:text-ink"
+          className="rounded-xl bg-white/[0.06] p-2 text-ink-muted hover:text-ink"
           aria-label="Close focus mode"
         >
           <X className="h-5 w-5" />
         </button>
       </div>
+      </div>
 
-      <div className="flex flex-1 flex-col justify-center px-6 py-8">
-        <div className="mx-auto w-full max-w-2xl space-y-6">
+      <div className="flex flex-1 flex-col justify-center overflow-y-auto px-4 py-7">
+        <div className="mx-auto w-full max-w-lg space-y-5">
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold leading-tight text-ink md:text-4xl">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">One task only</p>
+            <h1 className="text-2xl font-semibold leading-tight text-ink">
               {task.title}
             </h1>
-            <p className="text-lg text-cyan-200/90">{nextAction}</p>
+            <p className="text-base leading-6 text-ink-muted"><span className="font-medium text-primary">Next:</span> {nextAction}</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-400">
+          <div className="glass-panel rounded-2xl p-4">
+            <div className="flex items-center justify-between text-xs text-ink-muted">
+              <span>{task.estimatedDurationMinutes}m target</span>
+              <span className="text-primary">{doneCount}/{task.steps.length} steps</span>
+            </div>
+            <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/[0.07]"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.round((doneCount / Math.max(1, task.steps.length)) * 100)}%` }} /></div>
             {task.targetTime && (
-              <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
-                Target: <span className="font-bold text-ink">{formatTo12Hour(task.targetTime)}</span>
-              </span>
+              <p className="mt-3 text-xs text-ink-faint">Target {formatTo12Hour(task.targetTime)}</p>
             )}
-            <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
-              Estimated: <span className="font-bold text-ink">{task.estimatedDurationMinutes}m</span>
-            </span>
-            <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
-              Steps: <span className="font-bold text-ink">{doneCount}/{task.steps.length}</span>
-            </span>
           </div>
 
           {driftSignal && (
-            <div className="rounded-xl border border-amber-400/30 bg-amber-950/20 p-4">
-              <p className="text-sm font-bold text-amber-200">Possible phone drift</p>
-              <p className="mt-1 text-sm text-amber-100/80">{driftSignal.title}</p>
+            <div className="rounded-2xl border border-amber-400/25 bg-amber-300/[0.06] p-4">
+              <p className="text-sm font-semibold text-amber-100">Possible distraction</p>
+              <p className="mt-1 text-xs text-amber-100/70">{driftSignal.title}</p>
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2.5">
             <button
               onClick={onStepDone}
-              className="flex min-h-[72px] items-center gap-3 rounded-xl bg-emerald-500 px-4 py-4 text-left font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-45"
+              className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl bg-[#4ade80] px-4 py-3.5 text-left font-semibold text-[#06150b] shadow-soft disabled:opacity-45"
             >
               <Check className="h-6 w-6 shrink-0" />
               <span>
@@ -94,7 +94,7 @@ export function FocusMode({
             </button>
             <button
               onClick={onStuck}
-              className="flex min-h-[72px] items-center gap-3 rounded-xl bg-amber-400 px-4 py-4 text-left font-semibold text-slate-950 transition-colors hover:bg-amber-300"
+              className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl bg-[#f6c64f] px-4 py-3.5 text-left font-semibold text-[#211500] shadow-soft"
             >
               <AlertTriangle className="h-6 w-6 shrink-0" />
               <span>
@@ -104,7 +104,7 @@ export function FocusMode({
             </button>
             <button
               onClick={onRunningLate}
-              className="flex min-h-[72px] items-center gap-3 rounded-xl bg-rose-500 px-4 py-4 text-left font-semibold text-slate-950 transition-colors hover:bg-rose-400"
+              className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl bg-[#f16065] px-4 py-3.5 text-left font-semibold text-white shadow-soft"
             >
               <TimerReset className="h-6 w-6 shrink-0" />
               <span>
@@ -114,7 +114,7 @@ export function FocusMode({
             </button>
             <button
               onClick={onFinish}
-              className="flex min-h-[72px] items-center gap-3 rounded-xl border border-slate-700 bg-slate-800 px-4 py-4 text-left font-semibold text-ink transition-colors hover:bg-slate-700"
+              className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.07] px-4 py-3.5 text-left font-semibold text-ink shadow-soft"
             >
               <CheckCircle2 className="h-6 w-6 shrink-0" />
               <span>

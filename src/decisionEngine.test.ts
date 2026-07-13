@@ -28,7 +28,7 @@ describe("decision engine", () => {
     const situations = buildSmartSituations(logs, {}, new Date(2026, 4, 31, 13, 30).getTime());
 
     expect(situations).toHaveLength(1);
-    expect(situations[0].title).toContain("Send or submit");
+    expect(situations[0].title).toBe("Send the form");
     expect(situations[0].signals).toHaveLength(3);
     expect(situations[0].confidence).toBe("high");
     expect(situations[0].why.join(" ")).toContain("related signals");
@@ -58,9 +58,9 @@ describe("decision engine", () => {
     const situations = buildSmartSituations(logs, {}, now);
     const tasks = smartTasksFromSituations(situations);
 
-    expect(situations[0].title).toContain("Prepare for");
+    expect(situations[0].title).toBe("Get ready for Davidson appointment");
     expect(situations[0].urgency).toBe("now");
-    expect(tasks.map(task => task.title)).toContain("Return missed call from Mom");
+    expect(tasks.map(task => task.title)).toContain("Call Mom back");
     expect(tasks.every(task => task.associatedAnchorId)).toBe(true);
   });
 

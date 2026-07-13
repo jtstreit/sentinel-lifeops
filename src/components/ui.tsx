@@ -6,7 +6,7 @@ import type { ComponentType, ReactNode } from "react";
 
 /** Standard bordered surface panel — the default section container. */
 export function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <section className={`rounded-2xl border border-line bg-surface p-5 ${className}`}>{children}</section>;
+  return <section className={`rounded-lg border border-line bg-surface p-5 ${className}`}>{children}</section>;
 }
 
 /** Section intro: a small colored kicker over a heading and optional sub-line. */
@@ -33,7 +33,7 @@ export function SectionIntro({
 /** Compact metric tile: muted uppercase label above, prominent value below. */
 export function StatTile({ label, value, accent = false }: { label: string; value: ReactNode; accent?: boolean }) {
   return (
-    <div className="rounded-xl border border-line bg-surface-alt px-4 py-3">
+    <div className="rounded-lg border border-line bg-surface-alt px-4 py-3">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{label}</p>
       <p className={`mt-1 text-2xl font-bold ${accent ? "text-primary" : "text-ink"}`}>{value}</p>
     </div>
@@ -53,7 +53,7 @@ export function InfoCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-line bg-surface p-5">
+    <div className="rounded-lg border border-line bg-surface p-5">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
         <Icon className={`h-5 w-5 ${iconClass}`} aria-hidden="true" /> {title}
       </h3>

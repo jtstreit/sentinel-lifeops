@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Plus } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { StoredTask, TaskUrgency } from "../types";
 import { TaskCard } from "./TaskCard";
@@ -26,7 +26,10 @@ export function TaskList({
   onToggleComplete,
   onToggleStep,
   onDismiss,
-  onFocus
+  onFocus,
+  onAskOpus,
+  onAdd,
+  isCoaching,
 }: {
   tasks: StoredTask[];
   fallbackWhyFor?: (task: StoredTask) => string | undefined;
@@ -35,6 +38,9 @@ export function TaskList({
   onToggleStep: (task: StoredTask, stepId: string) => void;
   onDismiss: (task: StoredTask) => void;
   onFocus?: (task: StoredTask) => void;
+  onAskOpus?: (task: StoredTask) => void;
+  onAdd?: () => void;
+  isCoaching?: boolean;
 }) {
   const reduceMotion = useReducedMotion();
   const [filter, setFilter] = useState<UrgencyFilter>("all");
@@ -61,35 +67,29 @@ export function TaskList({
     { key: "later", label: "Later" }
   ];
 
-  const groups = useMemo(() => {
-    const keys: TaskUrgency[] = filter === "all" ? ["now", "soon", "later"] : [filter];
-    return keys.map(key => ({
-      key,
-      label: key.charAt(0).toUpperCase() + key.slice(1),
-      tasks: openTasks.filter(task => task.urgency === key)
-    }));
-  }, [openTasks, filter]);
-
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-ink">Task list</h2>
-          <p className="mt-1 text-sm text-slate-400">{openTasks.length} open, {doneTasks.length} done. Check a circle to complete.</p>
-        </div>
-        <div className="flex gap-1.5">
+    <section>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-[18px] font-semibold text-ink">Task list <span className="font-normal text-ink-faint">· {openTasks.length} open, {doneTasks.length} done</span></h2>
+        {onAdd && (
+          <button type="button" onClick={onAdd} className="flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3 text-xs font-semibold text-primary-ink">
+            <Plus className="h-4 w-4" /> Add
+          </button>
+        )}
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-2">
           {filters.map(item => (
             <button
               key={item.key}
               onClick={() => setFilter(item.key)}
-              className={`rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
-                filter === item.key ? "bg-primary text-primary-ink" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+              className={`rounded-full px-2 py-2 text-xs font-semibold transition-colors ${
+                filter === item.key ? "bg-primary text-primary-ink" : "border border-white/[0.07] bg-white/[0.05] text-ink-muted hover:text-ink"
               }`}
             >
               {item.label}
             </button>
           ))}
-        </div>
       </div>
 
       {isLoading && (
@@ -104,35 +104,26 @@ export function TaskList({
         </div>
       )}
 
-      <div className="mt-4 space-y-5">
-        {groups.map(group =>
-          group.tasks.length > 0 ? (
-            <div key={group.key}>
-              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-                {group.label} <span className="text-slate-600">({group.tasks.length})</span>
-              </h3>
-              <div className="space-y-3">
-                <AnimatePresence initial={false} mode={reduceMotion ? "wait" : "sync"}>
-                  {group.tasks.map(task => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      fallbackWhy={fallbackWhyFor?.(task)}
-                      onToggleComplete={onToggleComplete}
-                      onToggleStep={onToggleStep}
-                      onDismiss={onDismiss}
-                      onFocus={onFocus}
-                    />
-                  ))}
-                </AnimatePresence>
-              </div>
-            </div>
-          ) : null
-        )}
+      <div className="mt-3 space-y-2.5">
+        <AnimatePresence initial={false} mode={reduceMotion ? "wait" : "sync"}>
+          {openTasks.map(task => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              fallbackWhy={fallbackWhyFor?.(task)}
+              onToggleComplete={onToggleComplete}
+              onToggleStep={onToggleStep}
+              onDismiss={onDismiss}
+              onFocus={onFocus}
+              onAskOpus={onAskOpus}
+              isCoaching={isCoaching}
+            />
+          ))}
+        </AnimatePresence>
         {openTasks.length === 0 && !isLoading && (
-          <div className="rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-5">
-            <h3 className="text-base font-bold text-slate-100">{filter === "all" ? "No open tasks" : `Nothing marked "${filter}"`}</h3>
-            <p className="mt-2 text-sm leading-relaxed text-slate-400">
+          <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.025] p-5">
+            <h3 className="text-sm font-semibold text-ink">{filter === "all" ? "No open tasks" : `Nothing marked “${filter}”`}</h3>
+            <p className="mt-1.5 text-xs leading-5 text-ink-muted">
               {filter === "all"
                 ? "Accept a suggestion below, build cards from phone signals, or add a task manually."
                 : "Switch the filter back to All to see every open task."}
@@ -142,10 +133,10 @@ export function TaskList({
       </div>
 
       {doneTasks.length > 0 && (
-        <div className="mt-5 border-t border-slate-800 pt-4">
+        <div className="mt-5 border-t border-white/[0.07] pt-4">
           <button
             onClick={() => setShowDone(prev => !prev)}
-            className="flex items-center gap-1.5 text-sm font-bold text-slate-400 hover:text-ink"
+            className="flex items-center gap-1.5 text-sm font-medium text-ink-muted hover:text-ink"
           >
             <motion.span animate={{ rotate: showDone ? 180 : 0 }} transition={{ duration: reduceMotion ? 0 : 0.15 }}>
               <ChevronDown className="h-4 w-4" />
@@ -153,7 +144,7 @@ export function TaskList({
             Done ({doneTasks.length})
           </button>
           {showDone && (
-            <div className="mt-3 space-y-3">
+            <div className="mt-3 space-y-2.5">
               <AnimatePresence initial={false}>
                 {doneTasks.slice(0, 30).map(task => (
                   <TaskCard
@@ -163,6 +154,8 @@ export function TaskList({
                     onToggleComplete={onToggleComplete}
                     onToggleStep={onToggleStep}
                     onDismiss={onDismiss}
+                    onAskOpus={onAskOpus}
+                    isCoaching={isCoaching}
                   />
                 ))}
               </AnimatePresence>

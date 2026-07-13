@@ -350,22 +350,60 @@ function contactFromScreenText(content: string): string | null {
   return match?.[1] ? cleanSignalFragment(match[1], 40) : null;
 }
 
+function humanTaskPhrase(value: string, max = 72): string {
+  let phrase = String(value || "")
+    .replace(/^\s*[A-Z][A-Za-z0-9.'-]{1,24}(?:\s+[A-Z][A-Za-z0-9.'-]{1,24}){0,2}\s*:\s*/, "")
+    .replace(/^\s*(?:hey\s+[A-Za-z][A-Za-z.'-]*[,\s]+)?(?:can|could|would|will)\s+you\s+/i, "")
+    .replace(/^\s*(?:please|kindly)\s+/i, "")
+    .replace(/^\s*(?:i\s+)?need\s+you\s+to\s+/i, "")
+    .replace(/^\s*(?:remember|don't\s+forget)\s+to\s+/i, "")
+    .replace(/\s+(?:(?:at|by|before|around)\s+)?(?:today|tomorrow|tonight)(?:\s+(?:at|by|before|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?\s*[?.!]*$/i, "")
+    .replace(/\s+(?:at|by|before|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*[?.!]*$/i, "")
+    .replace(/\s+(?:at|by|before|around)\s*$/i, "")
+    .replace(/\s*[?.!]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!phrase) return "";
+  phrase = phrase.charAt(0).toUpperCase() + phrase.slice(1);
+  return cleanSignalFragment(phrase, max);
+}
+
+export function normalizeHumanTaskTitle(value: unknown, max = 72): string {
+  const withoutMachineLabel = String(value || "")
+    .replace(/^\s*(?:handle|prepare item|send or submit|pay or confirm|call back|act on)\s*:\s*/i, "")
+    .replace(/^\s*(?:active\s+)?notification\s+from\s+/i, "")
+    .replace(/^\s*(?:[a-z0-9_-]+\.){2,}[a-z0-9_-]+\s*:\s*/i, "")
+    .trim();
+  const phrase = humanTaskPhrase(withoutMachineLabel, max);
+  if (!phrase) return "";
+
+  const missedCall = phrase.match(/^return\s+(?:the\s+)?missed\s+call(?:\s+from)?\s+(.+)$/i);
+  if (missedCall?.[1]) return cleanSignalFragment(`Call ${missedCall[1]} back`, max);
+
+  if (/\bdaily\s+brief\b/i.test(phrase) && !/^review\b/i.test(phrase)) {
+    const subject = phrase
+      .split(/\s+[—–|]\s+|\s+-\s+(?=[A-Z][a-z]+\s+\d)/)[0]
+      .replace(/\s+\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?.*$/i, "")
+      .trim();
+    return cleanSignalFragment(`Review ${subject || "daily brief"}`, max);
+  }
+
+  return phrase;
+}
+
 function inferTaskTitle(log: SentinelEvent): string {
   const text = `${log.title} ${log.content}`;
-  const subject = cleanSignalFragment(log.content || log.title, 78);
+  const subject = humanTaskPhrase(log.content || log.title, 72);
   const person = log.source === "screen_text"
     ? contactFromScreenText(log.content) || contactFromTitle(log.title)
     : contactFromTitle(log.title);
 
-  if (log.source === "calendar") return `Prepare for ${cleanSignalFragment(log.title, 64)}`;
-  if (isMissedCallSignal(log)) return `Return missed call from ${person}`;
+  if (log.source === "calendar") return `Get ready for ${cleanSignalFragment(log.title.replace(/^calendar\s*:\s*/i, ""), 58)}`;
+  if (isMissedCallSignal(log)) return `Call ${person} back`;
+  if (subject && hasActionLanguage(text)) return subject;
   if (/\b(reply|respond|text back|message back)\b/i.test(text)) return `Reply to ${person}`;
-  if (/\b(pay|rent|invoice|bill)\b/i.test(text)) return `Pay or confirm: ${subject}`;
-  if (/\b(send|submit|email)\b/i.test(text)) return `Send or submit: ${subject}`;
-  if (/\b(pickup|pick up|bring)\b/i.test(text)) return `Prepare item: ${subject}`;
-  if (/\b(call\s+(me|back|them|him|her|us|[a-z])|phone)\b/i.test(text)) return `Call back: ${person}`;
-  if (/\b(appointment|meeting|meet|reservation|shift)\b/i.test(text)) return `Prepare for: ${subject}`;
-  return `Handle: ${subject}`;
+  if (/\bcall\b/i.test(text)) return `Call ${person}`;
+  return subject || `Follow up with ${person}`;
 }
 
 function firstActionForSignal(log: SentinelEvent): string {
@@ -373,13 +411,14 @@ function firstActionForSignal(log: SentinelEvent): string {
     ? contactFromScreenText(log.content) || contactFromTitle(log.title)
     : contactFromTitle(log.title);
   const text = `${log.title} ${log.content}`;
+  const taskTitle = inferTaskTitle(log);
   if (log.source === "calendar") return "Open the calendar event and put the first required item in one visible place.";
   if (isMissedCallSignal(log)) return `Open Phone and return the missed call from ${person}.`;
-  if (/\b(reply|respond|text back|message back)\b/i.test(text)) return `Open the message thread with ${person} and write the shortest useful reply.`;
-  if (/\b(pay|rent|invoice|bill)\b/i.test(text)) return "Open the payment or account page and confirm the amount due.";
-  if (/\b(send|submit|email)\b/i.test(text)) return "Open the needed app and attach or send the requested item.";
-  if (/\b(pickup|pick up|bring)\b/i.test(text)) return "Put the named item in one visible place now.";
-  return "Open the source app and do only the requested action.";
+  if (/\b(reply|respond|text back|message back)\b/i.test(text)) return `Open the conversation with ${person} and write the reply.`;
+  if (/\b(pay|rent|invoice|bill)\b/i.test(text)) return `Open the payment details for “${taskTitle}”.`;
+  if (/\b(send|submit|email)\b/i.test(text)) return `Open the message or document for “${taskTitle}”.`;
+  if (/\b(pickup|pick up|bring)\b/i.test(text)) return `Check what you need for “${taskTitle}”.`;
+  return `Open the relevant message and start “${taskTitle}”.`;
 }
 
 export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date.now()): ExecutiveTask | null {
@@ -388,8 +427,10 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
   const id = `task-${Date.now()}-${index}`;
   const title = inferTaskTitle(log);
   const nextPhysicalAction = firstActionForSignal(log);
-  const contentStep = cleanSignalFragment(log.content || log.title, 80);
   const targetTime = inferTargetTimeFromSignal(log);
+  const person = log.source === "screen_text"
+    ? contactFromScreenText(log.content) || contactFromTitle(log.title)
+    : contactFromTitle(log.title);
 
   if (log.source === "calendar") {
     return {
@@ -398,8 +439,9 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
       estimatedDurationMinutes: 30,
       isCompleted: false,
       targetTime,
-      avoidanceTarget: "Rereading the event instead of preparing what it requires",
+      avoidanceTarget: "Getting sidetracked before the event is ready",
       nextPhysicalAction,
+      sourceLogIds: [log.id],
       steps: [
         { id: `${id}-1`, title: "Open the calendar event", durationMinutes: 5, state: "current", packageName: log.packageName, source: log.source },
         { id: `${id}-2`, title: "Find the location, time, and required item", durationMinutes: 10, state: "pending" },
@@ -415,8 +457,9 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
       estimatedDurationMinutes: 10,
       isCompleted: false,
       targetTime,
-      avoidanceTarget: "Checking unrelated notifications before returning the call",
+      avoidanceTarget: "Checking other notifications first",
       nextPhysicalAction,
+      sourceLogIds: [log.id],
       steps: [
         { id: `${id}-1`, title: "Open Phone", durationMinutes: 2, state: "current", packageName: log.packageName, source: log.source },
         { id: `${id}-2`, title: `Call or message ${contactFromTitle(log.title)}`, durationMinutes: 5, state: "pending" },
@@ -431,12 +474,13 @@ export function buildTaskFromSignal(rawLog: SentinelEvent, index = 0, now = Date
     estimatedDurationMinutes: 15,
     isCompleted: false,
     targetTime,
-    avoidanceTarget: "Opening unrelated apps before finishing this one action",
+    avoidanceTarget: "Getting sidetracked before this is done",
     nextPhysicalAction,
+    sourceLogIds: [log.id],
     steps: [
-      { id: `${id}-1`, title: "Open the source app or thread", durationMinutes: 3, state: "current", packageName: log.packageName, source: log.source },
-      { id: `${id}-2`, title: `Act on: ${contentStep}`, durationMinutes: 9, state: "pending" },
-      { id: `${id}-3`, title: "Close the loop and return here", durationMinutes: 3, state: "pending" }
+      { id: `${id}-1`, title: person && person !== "phone signal" ? `Open ${person}'s message` : "Open the relevant message", durationMinutes: 3, state: "current", packageName: log.packageName, source: log.source },
+      { id: `${id}-2`, title, durationMinutes: 10, state: "pending" },
+      { id: `${id}-3`, title: "Mark it done", durationMinutes: 2, state: "pending" }
     ]
   };
 }
@@ -470,9 +514,49 @@ function coerceStringIdArray(value: unknown, max = 12): string[] | undefined {
   return ids.length > 0 ? ids : undefined;
 }
 
+function normalizeCoachGuidance(raw: any) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const summary = cleanSignalFragment(String(raw.summary || ""), 500);
+  const lowEnergyVersion = cleanSignalFragment(String(raw.lowEnergyVersion || ""), 500);
+  if (!summary || !lowEnergyVersion) return undefined;
+
+  const frictionPlan = Array.isArray(raw.frictionPlan)
+    ? raw.frictionPlan.slice(0, 5).map((item: any) => ({
+        friction: cleanSignalFragment(String(item?.friction || ""), 220),
+        response: cleanSignalFragment(String(item?.response || ""), 320),
+      })).filter((item: { friction: string; response: string }) => item.friction && item.response)
+    : [];
+  const habitPlan = raw.habitPlan && typeof raw.habitPlan === "object"
+    ? {
+        cue: cleanSignalFragment(String(raw.habitPlan.cue || ""), 240),
+        routine: cleanSignalFragment(String(raw.habitPlan.routine || ""), 300),
+        reward: cleanSignalFragment(String(raw.habitPlan.reward || ""), 240),
+      }
+    : null;
+  const behavioralActivation = raw.behavioralActivation && typeof raw.behavioralActivation === "object"
+    ? {
+        valueLink: cleanSignalFragment(String(raw.behavioralActivation.valueLink || ""), 300),
+        gradedStart: cleanSignalFragment(String(raw.behavioralActivation.gradedStart || ""), 300),
+        scheduledWindow: cleanSignalFragment(String(raw.behavioralActivation.scheduledWindow || ""), 180),
+      }
+    : null;
+  const generatedAtEpochMillis = Number(raw.generatedAtEpochMillis);
+
+  return {
+    summary,
+    lowEnergyVersion,
+    frictionPlan,
+    habitPlan: habitPlan?.cue && habitPlan.routine && habitPlan.reward ? habitPlan : null,
+    behavioralActivation: behavioralActivation?.valueLink && behavioralActivation.gradedStart && behavioralActivation.scheduledWindow ? behavioralActivation : null,
+    generatedAtEpochMillis: Number.isFinite(generatedAtEpochMillis) && generatedAtEpochMillis > 0 ? generatedAtEpochMillis : Date.now(),
+    engine: typeof raw.engine === "string" && raw.engine.trim() ? raw.engine.trim().slice(0, 120) : undefined,
+    model: typeof raw.model === "string" && raw.model.trim() ? raw.model.trim().slice(0, 180) : undefined,
+  };
+}
+
 export function normalizeTask(raw: any, index = 0): ExecutiveTask | null {
   if (!raw || looksLikePlaceholderTask(raw)) return null;
-  const title = cleanSignalFragment(String(raw.title || ""), 96);
+  const title = normalizeHumanTaskTitle(raw.title, 96);
   if (!title || title === "phone signal") return null;
   const steps = Array.isArray(raw.steps) && raw.steps.length > 0
     ? raw.steps.slice(0, 5).map((step: any, stepIndex: number) => ({
@@ -504,6 +588,8 @@ export function normalizeTask(raw: any, index = 0): ExecutiveTask | null {
   const sourceLogIds = coerceStringIdArray(raw.sourceLogIds);
   if (sourceLogIds) task.sourceLogIds = sourceLogIds;
   if (typeof raw.situationId === "string" && raw.situationId.trim()) task.situationId = raw.situationId.trim().slice(0, 180);
+  const coachGuidance = normalizeCoachGuidance(raw.coachGuidance);
+  if (coachGuidance) task.coachGuidance = coachGuidance;
   return task;
 }
 
@@ -538,14 +624,14 @@ export function sanitizeExtractedTasks(
 export function normalizeStoredTask(raw: any, now = Date.now()): StoredTask | null {
   if (!raw || typeof raw !== "object") return null;
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim().slice(0, 180) : "";
-  const title = String(raw.title || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const title = normalizeHumanTaskTitle(raw.title, 96);
   if (!id || !title) return null;
 
   const stepStates = new Set(["current", "pending", "done"]);
   const steps = Array.isArray(raw.steps)
     ? raw.steps.slice(0, 8).map((step: any, stepIndex: number) => ({
         id: typeof step?.id === "string" && step.id.trim() ? step.id.trim().slice(0, 180) : `${id}-step-${stepIndex}`,
-        title: String(step?.title || `Step ${stepIndex + 1}`).replace(/\s+/g, " ").trim().slice(0, 140),
+        title: normalizeHumanTaskTitle(step?.title || `Step ${stepIndex + 1}`, 120),
         durationMinutes: Math.max(1, Number(step?.durationMinutes || 5)),
         state: stepStates.has(step?.state) ? step.state as "current" | "pending" | "done" : "pending" as const
       }))
@@ -570,7 +656,7 @@ export function normalizeStoredTask(raw: any, now = Date.now()): StoredTask | nu
     targetTime: coerceTimeString(raw.targetTime),
     associatedAnchorId: raw.associatedAnchorId || null,
     avoidanceTarget: String(raw.avoidanceTarget || "").replace(/\s+/g, " ").trim().slice(0, 160),
-    nextPhysicalAction: String(raw.nextPhysicalAction || "").replace(/\s+/g, " ").trim().slice(0, 180),
+    nextPhysicalAction: normalizeHumanTaskTitle(raw.nextPhysicalAction || title, 160),
     steps,
     status,
     createdAtEpochMillis,
@@ -586,6 +672,8 @@ export function normalizeStoredTask(raw: any, now = Date.now()): StoredTask | nu
   const sourceLogIds = coerceStringIdArray(raw.sourceLogIds);
   if (sourceLogIds) task.sourceLogIds = sourceLogIds;
   if (typeof raw.situationId === "string" && raw.situationId.trim()) task.situationId = raw.situationId.trim().slice(0, 180);
+  const coachGuidance = normalizeCoachGuidance(raw.coachGuidance);
+  if (coachGuidance) task.coachGuidance = coachGuidance;
   return task;
 }
 

@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
   Bell,
+  BrainCircuit,
   CalendarDays,
   Check,
   CheckCircle2,
-  ChevronRight,
+  ChevronDown,
   Clock,
   Crosshair,
   Inbox,
@@ -18,17 +19,17 @@ import {
   Smartphone,
   Sparkles,
   TimerReset,
-  Trash2,
   X,
   Zap
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ExecutiveTask, SentinelEvent, SlipAutopsy, StoredTask } from "./types";
 import { formatTo12Hour, generateReverseTimeline, minutesToTimeString } from "./cartographer";
-import { Pill, StatTile } from "./components/ui";
+import { Pill } from "./components/ui";
 import { FocusMode } from "./components/FocusMode";
 import { SmartSuggestionCard } from "./components/SmartSuggestionCard";
 import { TaskList } from "./components/TaskList";
+import { buildAppliedCoachChanges, type TaskCoachPlan } from "./appliedCoachPlan";
 import {
   buildLocalRelevanceAudit,
   buildSmartSituations,
@@ -54,6 +55,7 @@ import {
   migrateStoredState,
   normalizeSignal,
   normalizeStoredTask,
+  normalizeHumanTaskTitle,
   normalizeTask,
   signalReason,
   taskSignals,
@@ -76,6 +78,7 @@ type SentinelAndroidBridge = {
 
 type AppTab = "today" | "signals" | "tasks" | "access";
 type Notice = { text: string; severity: "info" | "warning" | "error" };
+type AiProvenance = { engine: string; model: string | null; mode: string };
 type PermissionItem = {
   key: string;
   label: string;
@@ -184,14 +187,14 @@ function sourceIcon(source: SentinelEvent["source"]) {
 
 function primaryButtonClass(tone: "cyan" | "ai" | "green" | "amber" | "slate" | "red" = "cyan") {
   const map = {
-    cyan: "bg-primary text-primary-ink hover:opacity-90 border-transparent",
-    ai: "bg-accent text-[#0a1030] hover:opacity-90 border-transparent",
-    green: "bg-emerald-500 text-slate-950 hover:bg-emerald-400 border-emerald-400",
-    amber: "bg-amber-400 text-slate-950 hover:bg-amber-300 border-amber-300",
-    slate: "bg-surface-raised text-ink hover:bg-slate-700 border-line",
-    red: "bg-rose-500 text-ink hover:bg-rose-400 border-rose-400"
+    cyan: "bg-[#25b8c4] text-[#041619] hover:brightness-105 border-transparent",
+    ai: "bg-accent text-[#0a1030] hover:brightness-105 border-transparent",
+    green: "bg-[#4ade80] text-[#06150b] hover:brightness-105 border-transparent",
+    amber: "bg-[#f6c64f] text-[#211500] hover:brightness-105 border-transparent",
+    slate: "bg-white/[0.07] text-ink hover:bg-white/[0.1] border-white/[0.08]",
+    red: "bg-[#f16065] text-white hover:brightness-105 border-transparent"
   };
-  return `${map[tone]} border rounded-xl px-4 py-3 text-left font-semibold transition-colors disabled:opacity-45 disabled:cursor-not-allowed`;
+  return `${map[tone]} border rounded-2xl px-4 py-3.5 text-left font-semibold shadow-soft transition-all active:scale-[0.99] disabled:opacity-45 disabled:cursor-not-allowed`;
 }
 
 function ActionButton({
@@ -210,11 +213,11 @@ function ActionButton({
   onClick: () => void;
 }) {
   return (
-    <button onClick={onClick} disabled={disabled} className={`${primaryButtonClass(tone)} flex items-center gap-3 min-h-[58px]`}>
-      <Icon className="h-5 w-5 shrink-0" />
+    <button onClick={onClick} disabled={disabled} className={`${primaryButtonClass(tone)} flex min-h-[58px] w-full items-center gap-3`}>
+      <Icon className="h-[19px] w-[19px] shrink-0" strokeWidth={2.2} />
       <span className="min-w-0">
-        <span className="block text-sm leading-tight">{label}</span>
-        {hint && <span className="block text-xs font-medium opacity-75 leading-snug mt-0.5">{hint}</span>}
+        <span className="block text-[16px] leading-tight">{label}</span>
+        {hint && <span className="mt-0.5 block text-xs font-medium leading-snug opacity-75">{hint}</span>}
       </span>
     </button>
   );
@@ -257,11 +260,17 @@ function buildLocalAskAnswer(question: string, situations: SmartSituation[], sig
 }
 
 function auditEngineLabel(engine: RelevanceAudit["engine"]) {
-  if (engine === "claude-agent-sdk") return "Claude Opus";
-  if (engine === "claude-sdk") return "Claude Sonnet";
+  if (engine === "claude-agent-sdk") return "Claude agent";
+  if (engine === "claude-sdk") return "Claude API";
   if (engine === "claude-code-cli") return "Claude Code";
   if (engine === "deepseek") return "DeepSeek";
   return "local rules";
+}
+
+function aiProvenanceLabel(provenance: AiProvenance | null | undefined) {
+  if (!provenance) return "local rules";
+  if (provenance.model) return provenance.model;
+  return auditEngineLabel(provenance.engine as RelevanceAudit["engine"]);
 }
 
 function shortServerWarning(value: unknown) {
@@ -371,18 +380,24 @@ export default function LifeOpsApp() {
   const [signalFeedback, setSignalFeedback] = useState<DecisionFeedbackMap>(() => loadStoredRecord("sentinel-lifeops:signalFeedback") as DecisionFeedbackMap);
   const [suppressedSignalIds, setSuppressedSignalIds] = useState<Record<string, boolean>>(() => loadStoredRecord("sentinel-lifeops:suppressedSignalIds") as Record<string, boolean>);
   const [relevanceAudit, setRelevanceAudit] = useState<RelevanceAudit | null>(null);
+  const [relevanceProvenance, setRelevanceProvenance] = useState<AiProvenance | null>(null);
   const [selectedAuditIds, setSelectedAuditIds] = useState<Record<string, boolean>>({});
   const [isExtractingTasks, setIsExtractingTasks] = useState(false);
   const [isCheckingRelevance, setIsCheckingRelevance] = useState(false);
   const [askQuestion, setAskQuestion] = useState("");
   const [askAnswer, setAskAnswer] = useState("");
-  const [askEngine, setAskEngine] = useState<RelevanceAudit["engine"] | null>(null);
+  const [askProvenance, setAskProvenance] = useState<AiProvenance | null>(null);
   const [isAsking, setIsAsking] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [coachTask, setCoachTask] = useState<StoredTask | null>(null);
+  const [coachPlan, setCoachPlan] = useState<TaskCoachPlan | null>(null);
+  const [isCoaching, setIsCoaching] = useState(false);
   const [serverHealth, setServerHealth] = useState<{
     modelProvider?: string;
     modelRuntimeStatus?: string;
     model?: string | null;
+    fastModel?: string | null;
+    deepModel?: string | null;
     claudeLastError?: string | null;
     claudeLastSuccessAt?: string | null;
     claudeLastProvider?: string | null;
@@ -401,7 +416,7 @@ export default function LifeOpsApp() {
     };
   } | null>(null);
   const [androidBridgeStatus, setAndroidBridgeStatus] = useState<Record<string, any> | null>(null);
-  const [notice, setNotice] = useState<Notice | null>({ text: "Ready. Refresh phone data, then pick one real task when a useful signal appears.", severity: "info" });
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
   const [showStuckPanel, setShowStuckPanel] = useState(false);
   const [showDelayModal, setShowDelayModal] = useState(false);
@@ -415,7 +430,6 @@ export default function LifeOpsApp() {
   const [manualSignalSource, setManualSignalSource] = useState<SentinelEvent["source"]>("user_note");
   const [manualSignalTitle, setManualSignalTitle] = useState("");
   const [manualSignalContent, setManualSignalContent] = useState("");
-  const [quickNoteText, setQuickNoteText] = useState("");
   const [taskTargetOverrides, setTaskTargetOverrides] = useState<Record<string, string>>({});
   const [slipWhat, setSlipWhat] = useState("");
   const [slipExpected, setSlipExpected] = useState(15);
@@ -424,6 +438,7 @@ export default function LifeOpsApp() {
   const [slipFix, setSlipFix] = useState("");
   const lastAutoExtractKeyRef = useRef("");
   const lastTimelineNoticeKeyRef = useRef("");
+  const coachingRequestRef = useRef(false);
   const storedTasksRef = useRef(storedTasks);
   const reduceMotion = useReducedMotion();
 
@@ -463,10 +478,6 @@ export default function LifeOpsApp() {
       .filter(log => log.source === "app_usage" && !isSystemAppUsageSignal(log) && isDistractionSignal(`${log.title} ${log.content}`))
       .sort((a, b) => (b.capturedAtEpochMillis || 0) - (a.capturedAtEpochMillis || 0))[0] || null;
   }, [activeTask, activeFeed]);
-  const telemetryCounts = useMemo(() => activeFeed.reduce<Record<string, number>>((counts, item) => {
-    counts[item.source] = (counts[item.source] || 0) + 1;
-    return counts;
-  }, {}), [activeFeed]);
   const lastSignalTime = activeFeed[0]?.capturedAtEpochMillis;
   const selectedAuditCount = relevanceAudit?.items.filter(item => selectedAuditIds[item.id]).length || 0;
 
@@ -475,12 +486,6 @@ export default function LifeOpsApp() {
     return generateReverseTimeline(activeTask.targetTime, activeTask.steps, 20, 15);
   }, [activeTask]);
 
-  const hardLeaveLabel = typeof timeline.hardLeaveMinutes === "number"
-    ? formatTo12Hour(minutesToTimeString(timeline.hardLeaveMinutes))
-    : "not set";
-  const prepStartLabel = typeof timeline.prepStartMinutes === "number"
-    ? formatTo12Hour(minutesToTimeString(timeline.prepStartMinutes))
-    : "not set";
 
   const refreshAndroidStatus = useCallback(() => {
     if (!androidBridge) return;
@@ -636,11 +641,10 @@ export default function LifeOpsApp() {
         const newCount = next.filter(item => !prev.some(existing => existing.id === item.id)).length;
         if (forceRefresh || newCount > 0) {
           const actionable = taskSignals(next).length;
-          const scopeLabel = data.lookbackHours ? ` from a ${data.lookbackHours}-hour scan` : "";
-          const coverageLabel = data.historyCoverage ? ` ${data.historyCoverage}` : "";
+          const synced = /exported\s+\d+/i.test(exportLabel);
           // Periodic sync messages must never clobber an unacknowledged error.
           setNotice(prev => (!forceRefresh && prev?.severity === "error") ? prev : {
-            text: `${forceRefresh ? "Refreshed" : "Added"} ${newCount || incoming.length} phone signal${(newCount || incoming.length) === 1 ? "" : "s"}${scopeLabel}. ${actionable} can become task suggestions.${coverageLabel}${exportLabel}`,
+            text: `${forceRefresh ? "Refreshed" : "Added"} ${newCount || incoming.length} signals · ${actionable} task-ready${synced ? " · synced" : ""}`,
             severity: actionable > 0 ? "info" : "warning"
           });
         }
@@ -671,9 +675,9 @@ export default function LifeOpsApp() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  // Surface the AI route's health (provider + last error) on Tasks and Setup.
+  // Keep the header's live model/server indicator honest on every screen.
   useEffect(() => {
-    if (!canUseLifeOpsServer || (activeTab !== "tasks" && activeTab !== "access")) return;
+    if (!canUseLifeOpsServer) return;
     let cancelled = false;
     fetch(`${askApiBase || ""}/api/health`)
       .then(response => (response.ok ? response.json() : null))
@@ -693,7 +697,7 @@ export default function LifeOpsApp() {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, askApiBase, canUseLifeOpsServer]);
+  }, [askApiBase, canUseLifeOpsServer]);
 
   useEffect(() => {
     saveStoredArray("sentinel-lifeops:tasks", storedTasks);
@@ -756,7 +760,7 @@ export default function LifeOpsApp() {
     setIsExtractingTasks(true);
     try {
       let parsedTasks: ExecutiveTask[] = [];
-      let aiEngine = "";
+      let extractionProvenance: AiProvenance | null = null;
       if (isAutomatic) {
         // Auto-extract stays local: it fires every time new signals land and must not
         // burn an AI call in the background.
@@ -770,6 +774,7 @@ export default function LifeOpsApp() {
             method: "POST",
             headers: taskAuthHeaders,
             body: JSON.stringify({
+              mode: "fast",
               situations: smartSituations.slice(0, 8).map(compactSituationForTaskExtraction),
               logs: taskReadySignals.slice(0, 30).map(compactSignalForClaudeCheck)
             })
@@ -777,7 +782,11 @@ export default function LifeOpsApp() {
           if (response.ok) {
             const data = await response.json();
             parsedTasks = (data.results || []).map(normalizeTask).filter(Boolean) as ExecutiveTask[];
-            aiEngine = String(data.engine || "");
+            extractionProvenance = {
+              engine: String(data.engine || "local-heuristic"),
+              model: typeof data.model === "string" && data.model ? data.model : null,
+              mode: String(data.mode || "fast"),
+            };
           }
         } catch (err) {
           console.warn("Server task extraction unreachable; falling back:", err);
@@ -800,10 +809,13 @@ export default function LifeOpsApp() {
       if (!isAutomatic && nextTasks.length > 0) {
         setActiveTab("tasks");
       }
-      const aiWorded = parsedTasks.length > 0 && aiEngine && aiEngine !== "local-heuristic";
+      const aiWorded = parsedTasks.length > 0 && extractionProvenance?.engine !== "local-heuristic";
+      const resultSource = aiWorded
+        ? `worded by ${aiProvenanceLabel(extractionProvenance)} in ${extractionProvenance?.mode || "fast"} mode from grouped phone evidence`
+        : "from actionable phone signals";
       setNotice({
         text: nextTasks.length > 0
-          ? `Built ${nextTasks.length} task suggestion${nextTasks.length === 1 ? "" : "s"} ${aiWorded ? `worded by ${auditEngineLabel(aiEngine as RelevanceAudit["engine"])} from grouped phone evidence` : "from actionable phone signals"}.`
+          ? `Built ${nextTasks.length} task suggestion${nextTasks.length === 1 ? "" : "s"} ${resultSource}.`
           : "No real task was created. App usage and ordinary calls are being kept as context only.",
         severity: nextTasks.length > 0 ? "info" : "warning"
       });
@@ -896,6 +908,7 @@ export default function LifeOpsApp() {
   };
 
   const handleCheckRelevance = async () => {
+    if (isCheckingRelevance || isCoaching) return;
     setIsCheckingRelevance(true);
     setNotice({
       text: canUseLifeOpsServer ? "Asking the AI route to review the loaded signals once..." : "Reviewing locally. No LifeOps server is configured for this build.",
@@ -905,8 +918,10 @@ export default function LifeOpsApp() {
     try {
       let audit = localAudit;
       let serverWarning = "";
+      let provenance: AiProvenance | null = null;
       if (canUseLifeOpsServer) {
         const requestBody = {
+          mode: "deep",
           logs: activeFeed.slice(0, 60).map(compactSignalForClaudeCheck),
           situations: smartSituations.slice(0, 8).map(compactSituationForClaudeCheck),
           tasks: visibleSuggestionTasks.slice(0, 8).map(compactTaskForClaudeCheck),
@@ -926,12 +941,18 @@ export default function LifeOpsApp() {
         const data = await response.json();
         audit = data.audit || localAudit;
         serverWarning = shortServerWarning(data.warning);
+        provenance = {
+          engine: String(data.audit?.engine || data.engine || "local-heuristic"),
+          model: typeof data.model === "string" && data.model ? data.model : null,
+          mode: String(data.mode || "deep"),
+        };
       }
 
       setRelevanceAudit(audit);
+      setRelevanceProvenance(provenance);
       setSelectedAuditIds(Object.fromEntries(audit.items.filter(item => item.confidence === "high").map(item => [item.id, true])));
       setActiveTab("tasks");
-      const engineLabel = auditEngineLabel(audit.engine);
+      const engineLabel = provenance ? aiProvenanceLabel(provenance) : auditEngineLabel(audit.engine);
       const fallbackNote = audit.engine === "local-heuristic" && canUseLifeOpsServer
         ? serverWarning
           ? ` local rules handled this because the model route returned: ${serverWarning}`
@@ -946,6 +967,7 @@ export default function LifeOpsApp() {
     } catch (err) {
       console.warn("Relevance check failed; using local audit:", err);
       setRelevanceAudit(localAudit);
+      setRelevanceProvenance(null);
       setSelectedAuditIds(Object.fromEntries(localAudit.items.filter(item => item.confidence === "high").map(item => [item.id, true])));
       const errorMessage = err instanceof Error ? err.message : String(err || "");
       const failureNote = /^LifeOps server returned/.test(errorMessage)
@@ -1204,7 +1226,7 @@ export default function LifeOpsApp() {
       if (task.targetTime) {
         setTaskTargetOverrides(prev => ({ ...prev, [task.id]: task.targetTime! }));
       }
-      setActiveTab("tasks");
+      setActiveTab("signals");
       setNotice({ text: task.targetTime ? `Created a task suggestion for ${formatTo12Hour(task.targetTime)}.` : "Created a task suggestion from pasted text.", severity: "info" });
     } else {
       setNotice({ text: "Saved as context. It did not contain a concrete request, missed call, visible screen task, deadline, or appointment.", severity: "warning" });
@@ -1214,35 +1236,8 @@ export default function LifeOpsApp() {
     setManualSignalContent("");
   };
 
-  // One-tap owner note from Today: always captured as user_note so personal notes are
-  // labeled correctly in the telemetry archive (telemetry-positive; nothing is filtered).
-  const handleAddQuickNote = () => {
-    if (!quickNoteText.trim()) {
-      setNotice({ text: "Write the note first.", severity: "warning" });
-      return;
-    }
-
-    const signal = normalizeSignal({
-      id: `manual-signal-${Date.now()}`,
-      source: "user_note",
-      title: "Quick note",
-      content: quickNoteText.trim(),
-      capturedAtEpochMillis: Date.now()
-    });
-    androidBridge?.addTelemetryJson(JSON.stringify(signal));
-    setSentinelFeed(prev => dedupeSignals([signal, ...prev]));
-
-    const task = buildTaskFromSignal(signal, 0);
-    if (task) {
-      setExtractedTasks(prev => [task, ...prev.filter(item => item.title !== task.title)].slice(0, 8));
-      setNotice({ text: "Note captured. It also created a task suggestion.", severity: "info" });
-    } else {
-      setNotice({ text: "Note captured as context.", severity: "info" });
-    }
-    setQuickNoteText("");
-  };
-
   const handleAskSentinel = async () => {
+    if (isAsking || isCoaching) return;
     const question = askQuestion.trim();
     if (!question) {
       setNotice({ text: "Ask a question about the loaded phone signals first.", severity: "warning" });
@@ -1254,7 +1249,7 @@ export default function LifeOpsApp() {
     try {
       if (!canUseLifeOpsServer) {
         setAskAnswer(localAnswer);
-        setAskEngine("local-heuristic");
+        setAskProvenance({ engine: "local-heuristic", model: null, mode: "local" });
         return;
       }
 
@@ -1265,6 +1260,7 @@ export default function LifeOpsApp() {
           ...(ingestToken ? { "X-Sentinel-Ingest-Token": ingestToken } : {})
         },
         body: JSON.stringify({
+          mode: "deep",
           question,
           situations: smartSituations.slice(0, 8).map(situation => ({
             title: situation.title,
@@ -1290,14 +1286,77 @@ export default function LifeOpsApp() {
       }
       const data = await response.json();
       setAskAnswer(String(data.answer || localAnswer));
-      setAskEngine(data.answer && data.engine ? (String(data.engine) as RelevanceAudit["engine"]) : "local-heuristic");
+      setAskProvenance({
+        engine: String(data.answer && data.engine ? data.engine : "local-heuristic"),
+        model: typeof data.model === "string" && data.model ? data.model : null,
+        mode: String(data.mode || (data.answer ? "deep" : "local")),
+      });
     } catch (err) {
       console.warn("Ask Sentinel failed; using local answer:", err);
       setAskAnswer(localAnswer);
-      setAskEngine("local-heuristic");
+      setAskProvenance({ engine: "local-heuristic", model: null, mode: "local" });
     } finally {
       setIsAsking(false);
     }
+  };
+
+  const handleAskOpus = async (task: StoredTask) => {
+    if (coachingRequestRef.current || isCoaching) return;
+    coachingRequestRef.current = true;
+    setCoachTask(task);
+    setCoachPlan(null);
+    setIsCoaching(true);
+
+    const situation = smartSituationByTaskId.get(task.situationId || task.associatedAnchorId || task.id);
+    const relevantSignalIds = new Set(task.sourceLogIds || situation?.signals.map(signal => signal.id) || []);
+    const context = activeFeed
+      .filter(signal => relevantSignalIds.has(signal.id))
+      .slice(0, 6)
+      .map(compactSignalForClaudeCheck);
+
+    try {
+      if (!canUseLifeOpsServer) {
+        throw new Error("The LifeOps AI server is not configured in this build.");
+      }
+      const response = await fetch(`${askApiBase || ""}/api/coach-task`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(ingestToken ? { "X-Sentinel-Ingest-Token": ingestToken } : {})
+        },
+        body: JSON.stringify({
+          task: compactTaskForClaudeCheck(task),
+          context,
+          mode: "deep"
+        })
+      });
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(`Opus planning returned ${response.status}${detail ? `: ${shortServerWarning(detail)}` : ""}`);
+      }
+      const data = await response.json();
+      if (!data?.plan || !Array.isArray(data.plan.chunks)) {
+        throw new Error("Opus did not return a usable task plan.");
+      }
+      setCoachPlan({ ...data.plan, engine: data.engine, model: data.model, mode: data.mode });
+    } catch (err) {
+      console.warn("Opus task planning failed:", err);
+      setCoachTask(null);
+      setNotice({ text: err instanceof Error ? err.message : "Opus could not build a plan for this task.", severity: "error" });
+    } finally {
+      coachingRequestRef.current = false;
+      setIsCoaching(false);
+    }
+  };
+
+  const handleApplyCoachPlan = () => {
+    if (!coachTask || !coachPlan) return;
+    const now = Date.now();
+    applyTaskChange(coachTask, buildAppliedCoachChanges(coachPlan, now));
+    setCoachTask(null);
+    setCoachPlan(null);
+    setActiveTab("today");
+    setNotice({ text: "Opus plan applied. The first small step is ready.", severity: "info" });
   };
 
   const handleCreateDelayNote = () => {
@@ -1364,14 +1423,14 @@ export default function LifeOpsApp() {
     if (!relevanceAudit) return null;
 
     return (
-      <section className="rounded-lg border border-amber-400/30 bg-slate-900 p-5">
+      <section className="rounded-2xl border border-amber-400/25 bg-amber-300/[0.05] p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <h2 className="text-lg font-bold text-ink">Possible cleanup</h2>
-            <p className="mt-2 text-sm leading-relaxed text-slate-400">{relevanceAudit.summary}</p>
+            <h2 className="text-base font-semibold text-ink">Possible cleanup</h2>
+            <p className="mt-1.5 text-xs leading-5 text-ink-muted">{relevanceAudit.summary}</p>
           </div>
           <span className="rounded-full bg-amber-400/10 px-3 py-1 text-xs font-bold text-amber-200">
-            {auditEngineLabel(relevanceAudit.engine)}
+            {relevanceProvenance ? `${aiProvenanceLabel(relevanceProvenance)} · ${relevanceProvenance.mode}` : auditEngineLabel(relevanceAudit.engine)}
           </span>
         </div>
 
@@ -1379,7 +1438,7 @@ export default function LifeOpsApp() {
           <>
             <div className="mt-4 space-y-2">
               {relevanceAudit.items.map(item => (
-                <label key={item.id} className="flex items-start gap-3 rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+                <label key={item.id} className="flex items-start gap-3 rounded-2xl border border-white/[0.07] bg-black/20 p-3">
                   <input
                     type="checkbox"
                     checked={Boolean(selectedAuditIds[item.id])}
@@ -1395,8 +1454,8 @@ export default function LifeOpsApp() {
               ))}
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button onClick={() => setRelevanceAudit(null)} className="rounded-lg border border-slate-700 px-4 py-3 text-sm font-bold text-slate-300 hover:bg-slate-800">Keep all</button>
-              <button onClick={clearSelectedAuditItems} className="rounded-lg bg-amber-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-amber-300">
+              <button onClick={() => setRelevanceAudit(null)} className="rounded-xl border border-white/[0.08] px-4 py-3 text-sm font-medium text-ink-muted">Keep all</button>
+              <button onClick={clearSelectedAuditItems} className="rounded-xl bg-amber-300 px-4 py-3 text-sm font-semibold text-amber-950">
                 Clear selected as not tasks{selectedAuditCount ? ` (${selectedAuditCount})` : ""}
               </button>
             </div>
@@ -1411,43 +1470,28 @@ export default function LifeOpsApp() {
   };
 
   const renderClaudeReviewPanel = () => (
-    <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+    <section className="glass-panel rounded-2xl p-4">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-bold text-cyan-200">AI Review</p>
-          <h2 className="mt-2 text-lg font-bold text-ink">Ask or clean up the same task context</h2>
-          <p className="mt-2 text-sm leading-relaxed text-slate-400">
-            The check button looks for irrelevant cards to clear. The question box asks about priorities, reasons, and what to ignore.
-          </p>
-          {canUseLifeOpsServer && serverHealth && (
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">
-              AI route: {serverHealth.modelProvider || "unknown"}
-              {serverHealth.model ? ` · ${serverHealth.model}` : ""}
-              {serverHealth.modelRuntimeStatus ? ` · ${serverHealth.modelRuntimeStatus}` : ""}
-              {serverHealth.claudeLastError ? ` · last error: ${clipForClaudeCheck(serverHealth.claudeLastError, 140)}` : ""}
-              {serverHealth.aiAuth && !serverHealth.aiAuth.anthropicKeyPresent && !serverHealth.aiAuth.deepseekKeyPresent
-                ? " · no AI credential configured"
-                : ""}
-              {serverHealth.aiAuth?.anthropicCredentialShape === "oauth_or_other"
-                ? " · Claude OAuth credential"
-                : serverHealth.aiAuth?.anthropicCredentialShape === "api_key"
-                  ? " · Anthropic API key"
-                  : ""}
-            </p>
-          )}
+          <div className="flex items-center gap-2">
+            <BrainCircuit className="h-4 w-4 text-accent" />
+            <p className="text-sm font-semibold text-ink">Opus deep review</p>
+          </div>
+          <p className="mt-1.5 text-xs leading-5 text-ink-muted">Use the expensive model only when the task list needs judgment, cleanup, or explanation.</p>
         </div>
-        <div className="w-full md:w-64">
-          <ActionButton
-            icon={ShieldCheck}
-            label={canUseLifeOpsServer ? "Have AI check" : "Review locally"}
-            hint="Suggests cleanup once"
-            tone="slate"
-            disabled={isCheckingRelevance || activeFeed.length === 0}
-            onClick={handleCheckRelevance}
-          />
-        </div>
+        <span className="shrink-0 rounded-full border border-accent/25 bg-accent-soft px-2.5 py-1 text-[10px] font-semibold text-indigo-100">On demand</span>
       </div>
-      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+
+      <button
+        type="button"
+        onClick={handleCheckRelevance}
+        disabled={isCheckingRelevance || isCoaching || activeFeed.length === 0}
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm font-semibold text-indigo-50 disabled:opacity-45"
+      >
+        <ShieldCheck className="h-4 w-4" /> {isCheckingRelevance ? "Reviewing..." : "Deep-check this list"}
+      </button>
+
+      <div className="mt-3 flex gap-2">
         <input
           value={askQuestion}
           onChange={event => setAskQuestion(event.target.value)}
@@ -1457,35 +1501,21 @@ export default function LifeOpsApp() {
               handleAskSentinel();
             }
           }}
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-          placeholder="Ask the AI route what matters, why a card exists, or what to ignore"
+          className="min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-sm text-ink outline-none placeholder:text-ink-faint focus:border-accent/60"
+          placeholder="Ask Opus about priorities or friction"
         />
-        <button
-          onClick={handleAskSentinel}
-          disabled={isAsking}
-          className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
-        >
-          {isAsking ? "Asking..." : "Ask"}
+        <button onClick={handleAskSentinel} disabled={isAsking || isCoaching} className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink disabled:opacity-50">
+          {isAsking ? "..." : "Ask"}
         </button>
       </div>
+
       {askAnswer && (
-        <div className="mt-4 rounded-lg border border-cyan-400/20 bg-cyan-950/20 p-4">
+        <div className="mt-3 rounded-xl border border-accent/20 bg-black/20 p-3">
           <div className="flex items-start justify-between gap-3">
-            <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-xs font-bold text-cyan-200">
-              Answered by {askEngine ? auditEngineLabel(askEngine) : "local rules"}
-            </span>
-            <button
-              onClick={() => {
-                setAskAnswer("");
-                setAskEngine(null);
-              }}
-              className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-ink"
-              aria-label="Clear answer"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-200">{aiProvenanceLabel(askProvenance)}{askProvenance?.mode ? ` · ${askProvenance.mode}` : ""}</span>
+            <button onClick={() => { setAskAnswer(""); setAskProvenance(null); }} className="text-ink-faint hover:text-ink" aria-label="Clear answer"><X className="h-4 w-4" /></button>
           </div>
-          <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-cyan-50">{askAnswer}</p>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-ink-muted">{askAnswer}</p>
         </div>
       )}
     </section>
@@ -1494,11 +1524,14 @@ export default function LifeOpsApp() {
   const renderTaskCard = (task: ExecutiveTask) => {
     const situation = smartSituationByTaskId.get(task.id)
       || (task.associatedAnchorId ? smartSituationByTaskId.get(task.associatedAnchorId) : undefined);
+    const sourceSignal = situation?.primarySignal
+      || activeFeed.find(signal => task.sourceLogIds?.includes(signal.id));
     return (
       <SmartSuggestionCard
         key={task.id}
         task={task}
         situation={situation}
+        sourceSignal={sourceSignal}
         targetTime={taskTargetOverrides[task.id] || task.targetTime || undefined}
         onApprove={() => approveTaskCandidate(task)}
         onDismiss={() => dismissTaskCard(task)}
@@ -1533,24 +1566,40 @@ export default function LifeOpsApp() {
   };
 
   return (
-    <div className="min-h-screen bg-bg text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-800 bg-surface/95 pt-[max(2rem,env(safe-area-inset-top))] backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-cyan-400/10 p-2 text-cyan-200">
-              <ShieldCheck className="h-6 w-6" />
+    <div className="min-h-screen text-slate-100">
+      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-bg/92 pt-[max(.45rem,env(safe-area-inset-top))] backdrop-blur-2xl">
+        <div className="mx-auto max-w-lg px-4">
+          <div className="flex items-center justify-between gap-3 py-2.5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/[0.08] text-primary">
+                <ShieldCheck className="h-[19px] w-[19px]" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="truncate text-[16px] font-semibold leading-tight text-ink">Sentinel LifeOps</h1>
+                <p className="mt-0.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-faint">
+                  <span className={`h-1.5 w-1.5 rounded-full ${serverHealth?.modelProvider === "unreachable" ? "bg-danger" : serverHealth ? "bg-primary" : "bg-warn"}`} />
+                  <span className={serverHealth && serverHealth.modelProvider !== "unreachable" ? "text-primary" : ""}>{serverHealth && serverHealth.modelProvider !== "unreachable" ? "Live" : serverHealth ? "Offline" : "Connecting"}</span>
+                  <span>phone context</span>
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-sm font-extrabold tracking-wide text-ink sm:text-base">Sentinel LifeOps</h1>
-              <p className="text-xs text-slate-400">Phone signals to one next task</p>
-            </div>
+            <button
+              type="button"
+              onClick={() => syncTelemetryLogs(true)}
+              disabled={isSyncing}
+              className="flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.04] px-2.5 py-2 text-[11px] font-medium text-ink-muted disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 text-primary ${isSyncing ? "animate-spin" : ""}`} />
+              {isSyncing ? "Syncing" : "Live telemetry"}
+            </button>
           </div>
-          <div className="shrink-0 text-right">
-            <div className="flex items-center justify-end gap-1.5 text-sm font-bold text-slate-100">
-              <Clock className="h-4 w-4 text-amber-300" />
-              {formatTo12Hour(displayCurrentTime)}
-            </div>
-            <p className="text-xs text-slate-500">{isAndroidBridgeAvailable ? "Android bridge" : "Desktop preview"}</p>
+
+          <div className="flex items-center gap-2 pb-2.5">
+            <span className="rounded-full border border-white/[0.07] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-ink-muted">Quick mode</span>
+            <button type="button" onClick={() => setActiveTab("tasks")} className="flex items-center gap-1.5 rounded-full border border-accent/25 bg-accent-soft/45 px-2.5 py-1 text-[10px] font-medium text-indigo-100">
+              <BrainCircuit className="h-3 w-3" /> Opus deep dive
+            </button>
+            <span className="ml-auto text-[10px] text-ink-faint">{taskReadySignals.length} ready</span>
           </div>
         </div>
       </header>
@@ -1565,14 +1614,14 @@ export default function LifeOpsApp() {
             transition={{ duration: 0.16 }}
             role="status"
             aria-live="polite"
-            className={`border-b px-4 py-3 ${
-              notice.severity === "error" ? "border-rose-500/30 bg-rose-950/50 text-rose-100" :
-              notice.severity === "warning" ? "border-amber-500/30 bg-amber-950/40 text-amber-100" :
-              "border-cyan-500/20 bg-cyan-950/30 text-cyan-100"
+            className={`fixed inset-x-3 bottom-[calc(5.8rem+env(safe-area-inset-bottom))] z-[45] mx-auto max-w-md rounded-2xl border px-3.5 py-3 shadow-2xl backdrop-blur-2xl ${
+              notice.severity === "error" ? "border-rose-500/30 bg-rose-950/95 text-rose-100" :
+              notice.severity === "warning" ? "border-amber-500/30 bg-amber-950/95 text-amber-100" :
+              "border-cyan-500/20 bg-[#0b2d31]/95 text-cyan-100"
             }`}
           >
-            <div className="mx-auto flex max-w-5xl items-start justify-between gap-3 text-sm">
-              <span className="leading-relaxed">{notice.text}</span>
+            <div className="flex items-start justify-between gap-3 text-xs">
+              <span className="line-clamp-3 leading-relaxed">{notice.text}</span>
               <button onClick={() => setNotice(null)} className="rounded p-1 text-slate-300 hover:bg-white/10" aria-label="Dismiss message">
                 <X className="h-4 w-4" />
               </button>
@@ -1581,7 +1630,7 @@ export default function LifeOpsApp() {
         )}
       </AnimatePresence>
 
-      <main className="mx-auto max-w-5xl px-4 pb-32 pt-5">
+      <main className="mx-auto max-w-lg px-4 pb-[calc(6.35rem+env(safe-area-inset-bottom))] pt-3.5">
         <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={activeTab}
@@ -1593,64 +1642,112 @@ export default function LifeOpsApp() {
         {activeTab === "today" && (
           <div className="space-y-4">
             {activeTask ? (
-              <section className="rounded-2xl border border-emerald-400/25 bg-slate-900 p-5">
-                <p className="text-sm font-bold text-emerald-200">Current task</p>
-                <h2 className="mt-2 text-3xl font-bold leading-tight text-ink">{activeTask.title}</h2>
-                <p className="mt-3 text-lg text-cyan-200/90">{nextStep?.title || activeTask.nextPhysicalAction}</p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {activeTask.targetTime && <Pill tone="warn">{formatTo12Hour(activeTask.targetTime)}</Pill>}
-                  <Pill tone="neutral">{activeTask.estimatedDurationMinutes}m</Pill>
-                </div>
-                <div className="mt-5 grid gap-3 md:grid-cols-4">
+              <>
+                <section className="rounded-2xl border border-white/[0.08] bg-white/[0.045] p-4 shadow-card">
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span className="font-semibold text-ink">{activeTask.estimatedDurationMinutes}m target <span className="font-normal text-ink-faint">· {activeTask.steps.filter(step => step.state === "done").length}/{activeTask.steps.length}</span></span>
+                    <span className="rounded-full border border-accent/20 bg-accent-soft/40 px-2.5 py-1 font-medium text-indigo-100">Opus / Quick</span>
+                  </div>
+                  <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/[0.07]">
+                    <div className="h-full rounded-full bg-primary shadow-[0_0_10px_rgb(20_240_201_/_0.7)]" style={{ width: `${Math.round((activeTask.steps.filter(step => step.state === "done").length / Math.max(1, activeTask.steps.length)) * 100)}%` }} />
+                  </div>
+                  <h2 className="mt-3 line-clamp-2 text-[18px] font-semibold leading-6 text-ink">{normalizeHumanTaskTitle(activeTask.title, 84) || activeTask.title}</h2>
+                  <p className="mt-1.5 line-clamp-2 text-sm leading-5 text-ink-muted"><span className="font-medium text-primary">Next:</span> {normalizeHumanTaskTitle(nextStep?.title || activeTask.nextPhysicalAction, 110) || nextStep?.title || activeTask.nextPhysicalAction}</p>
+                  {activeTask.targetTime && <p className="mt-2 text-xs text-ink-faint">Target {formatTo12Hour(activeTask.targetTime)}</p>}
+                </section>
+
+                <section className="space-y-2" aria-label="Task actions">
                   <ActionButton icon={Check} label="Step done" hint="Advance checklist" tone="green" onClick={handleMarkNextStepDone} disabled={!nextStep} />
                   <ActionButton icon={AlertTriangle} label="I'm stuck" hint="Simplify next actions" tone="amber" onClick={() => setShowStuckPanel(true)} />
                   <ActionButton icon={TimerReset} label="Running late" hint="Shrink the route" tone="red" onClick={handleRunningLate} />
                   <ActionButton icon={Crosshair} label="Focus" hint="Fullscreen current task" tone="cyan" onClick={() => setFocusModeOpen(true)} />
-                </div>
-              </section>
+                </section>
+
+                <details className="overflow-hidden rounded-2xl border border-white/[0.07] bg-white/[0.025]">
+                  <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium text-ink-muted">
+                    <span>Checklist</span>
+                    <span className="flex items-center gap-2 text-xs text-ink-faint">{activeTask.steps.filter(step => step.state === "done").length}/{activeTask.steps.length} complete <ChevronDown className="h-4 w-4" /></span>
+                  </summary>
+                  <div className="border-t border-white/[0.06]">
+                    {activeTask.steps.map((step, index) => (
+                    <button
+                      type="button"
+                      key={step.id}
+                      onClick={() => {
+                        if (step.state === "done") return;
+                        androidBridge?.openSourceApp?.(step.packageName || "", step.source || undefined);
+                        updateTaskStepState(activeTask.id, step.id);
+                      }}
+                      className={`flex w-full items-start gap-3 border-b border-white/[0.06] p-3.5 text-left last:border-b-0 ${step.state === "current" ? "bg-primary/[0.06]" : ""}`}
+                    >
+                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${step.state === "done" ? "bg-primary text-primary-ink" : step.state === "current" ? "border border-primary/60 text-primary" : "bg-white/[0.06] text-ink-faint"}`}>
+                        {step.state === "done" ? <Check className="h-4 w-4" /> : index + 1}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className={`block text-sm font-medium leading-5 ${step.state === "done" ? "text-ink-faint line-through" : "text-ink"}`}>{normalizeHumanTaskTitle(step.title, 110) || step.title}</span>
+                        <span className="mt-0.5 block text-xs text-ink-faint">{step.durationMinutes} minutes</span>
+                      </span>
+                    </button>
+                    ))}
+                  </div>
+                </details>
+
+                <button
+                  type="button"
+                  onClick={() => handleAskOpus(activeTask)}
+                  disabled={isCoaching}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-accent/25 bg-accent-soft/55 px-4 py-3 text-sm font-semibold text-indigo-50 disabled:opacity-45"
+                >
+                  <BrainCircuit className="h-4 w-4" /> Ask Opus to simplify this task
+                </button>
+
+                <details className="rounded-2xl border border-white/[0.07] bg-white/[0.025]">
+                  <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3.5 text-sm text-ink-muted">
+                    Task options <ChevronDown className="h-4 w-4" />
+                  </summary>
+                  <div className="space-y-3 border-t border-white/[0.06] p-4">
+                    <label className="block">
+                      <span className="text-xs font-medium text-ink-muted">Target time</span>
+                      <input type="time" value={activeTask.targetTime || ""} onChange={event => updateActiveTaskTargetTime(event.target.value)} className="mt-2 w-full rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-ink" />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={() => setShowDelayModal(true)} className="rounded-xl border border-white/[0.08] px-3 py-3 text-sm font-medium text-ink-muted">Log delay</button>
+                      <button type="button" onClick={handleFinishTask} className="rounded-xl bg-white/[0.08] px-3 py-3 text-sm font-medium text-ink"><CheckCircle2 className="mr-1.5 inline h-4 w-4" /> Finish task</button>
+                    </div>
+                  </div>
+                </details>
+              </>
             ) : visibleSuggestionTasks.length > 0 ? (
-              <section className="rounded-2xl border border-cyan-400/25 bg-slate-900 p-5">
+              <section>
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-bold text-cyan-200">Top suggestion</p>
-                    <h2 className="text-2xl font-bold text-ink">Start with this</h2>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">Ready to act</p>
+                    <h2 className="mt-1 text-xl font-semibold text-ink">One useful next task</h2>
                   </div>
-                  <button onClick={() => setActiveTab("signals")} className="text-sm font-semibold text-primary hover:opacity-80">See all</button>
+                  <button onClick={() => setActiveTab("signals")} className="text-xs font-medium text-primary">See inbox</button>
                 </div>
                 <div className="mt-4">{renderTaskCard(visibleSuggestionTasks[0])}</div>
               </section>
             ) : (
-              <section className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-                <p className="text-xl font-bold text-ink">No task yet</p>
-                <p className="mt-2 text-sm text-slate-400">Find tasks from your phone signals, or add one manually.</p>
-                <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
-                  <ActionButton icon={Sparkles} label="Find tasks" hint="From phone signals" tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                  <ActionButton icon={Plus} label="Add task" hint="Manual" tone="slate" onClick={() => setShowAddTaskModal(true)} />
+              <section className="glass-panel rounded-3xl p-7 text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary"><Check className="h-6 w-6" /></div>
+                <p className="mt-4 text-xl font-semibold text-ink">Nothing needs your attention</p>
+                <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-ink-muted">Refresh the phone feed or add something already on your mind.</p>
+                <div className="mt-5 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => syncTelemetryLogs(true)} disabled={isSyncing} className="rounded-xl border border-white/[0.08] bg-white/[0.05] px-3 py-3 text-sm font-medium text-ink">{isSyncing ? "Refreshing..." : "Refresh"}</button>
+                  <button type="button" onClick={() => setShowAddTaskModal(true)} className="rounded-xl bg-primary px-3 py-3 text-sm font-semibold text-primary-ink">Add task</button>
                 </div>
               </section>
             )}
 
             {driftSignal && activeTask && (
-              <section className="rounded-xl border border-amber-400/30 bg-amber-950/20 p-4">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <section className="rounded-2xl border border-amber-400/25 bg-amber-400/[0.07] p-4">
+                <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-bold text-amber-200">Possible phone drift</p>
-                    <p className="mt-1 text-sm text-amber-100/80">{cleanSignalFragment(driftSignal.title, 90)}</p>
+                    <p className="text-sm font-semibold text-amber-100">Possible distraction</p>
+                    <p className="mt-1 text-xs text-amber-100/70">{cleanSignalFragment(driftSignal.title, 90)}</p>
                   </div>
-                  <ActionButton icon={ChevronRight} label="Return to task" hint="Back to current task" tone="amber" onClick={handleReturnFromDrift} />
-                </div>
-              </section>
-            )}
-
-            {!activeTask && (
-              <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">
-                    {(telemetryCounts.sms || 0) + (telemetryCounts.calendar || 0) + (telemetryCounts.notification || 0) + (telemetryCounts.screen_text || 0)} phone signals loaded
-                  </span>
-                  <button onClick={() => syncTelemetryLogs(true)} className="text-sm font-semibold text-primary hover:opacity-80">
-                    {isSyncing ? "Refreshing..." : "Refresh"}
-                  </button>
+                  <button type="button" onClick={handleReturnFromDrift} className="shrink-0 rounded-xl bg-amber-300 px-3 py-2 text-xs font-semibold text-amber-950">Return</button>
                 </div>
               </section>
             )}
@@ -1658,134 +1755,7 @@ export default function LifeOpsApp() {
         )}
 
         {activeTab === "tasks" && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-cyan-400/25 bg-slate-900 p-5">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="max-w-2xl">
-                  <p className="text-sm font-bold text-cyan-200">Tasks</p>
-                  <h2 className="mt-2 text-2xl font-bold text-ink">One list: current task, open tasks, done history</h2>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-400">
-                    Messages, missed calls, calendar items, notifications, and visible app text become suggestions only when they contain a concrete next action. Accepted ones live here with checkmarks.
-                  </p>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[360px]">
-                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh data"} hint="Scan the last 24 hours" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
-                  <ActionButton icon={Sparkles} label={isExtractingTasks ? "Building..." : "Build cards"} hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                  <ActionButton icon={Plus} label="Add task" hint="Manual backup" tone="slate" onClick={() => setShowAddTaskModal(true)} />
-                </div>
-              </div>
-            </section>
-
-            {activeTask && (
-              <>
-                <section className="rounded-xl border border-emerald-400/25 bg-slate-900 p-5">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
-                      <p className="text-sm font-bold text-emerald-200">Current Task</p>
-                      <h2 className="mt-2 text-2xl font-bold text-ink">{activeTask.title}</h2>
-                      {activeTask.why && <p className="mt-2 text-sm leading-relaxed text-slate-400">{activeTask.why}</p>}
-                      <p className="mt-3 text-base leading-relaxed text-slate-300">{nextStep?.title || activeTask.nextPhysicalAction}</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 lg:w-72">
-                      <StatTile label="Estimated" value={`${activeTask.estimatedDurationMinutes}m`} />
-                      <StatTile label="Done" value={`${activeTask.steps.filter(step => step.state === "done").length}/${activeTask.steps.length}`} />
-                    </div>
-                  </div>
-                  <label className="mt-5 block max-w-xs">
-                    <span className="text-sm font-bold text-slate-300">Target time</span>
-                    <input
-                      type="time"
-                      value={activeTask.targetTime || ""}
-                      onChange={event => updateActiveTaskTargetTime(event.target.value)}
-                      className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
-                    />
-                  </label>
-                  <div className="mt-5 grid gap-3 md:grid-cols-5">
-                    <ActionButton icon={Check} label="Step done" hint="Advance checklist" tone="green" onClick={handleMarkNextStepDone} disabled={!nextStep} />
-                    <ActionButton icon={AlertTriangle} label="I'm stuck" hint="Simplify next actions" tone="amber" onClick={() => setShowStuckPanel(true)} />
-                    <ActionButton icon={TimerReset} label="Running late" hint="Shrink the route" tone="red" onClick={handleRunningLate} />
-                    <ActionButton icon={Crosshair} label="Focus" hint="Fullscreen current task" tone="cyan" onClick={() => setFocusModeOpen(true)} />
-                    <ActionButton icon={CheckCircle2} label="Finish task" hint="Mark all done" tone="slate" onClick={handleFinishTask} />
-                  </div>
-                  <div className="mt-5 space-y-3">
-                    {activeTask.steps.map((step, index) => (
-                      <button
-                        key={step.id}
-                        onClick={() => {
-                          if (step.state === "done") return;
-                          if (androidBridge?.openSourceApp) {
-                            androidBridge.openSourceApp(step.packageName || "", step.source || undefined);
-                          }
-                          updateTaskStepState(activeTask.id, step.id);
-                        }}
-                        className={`flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
-                          step.state === "done" ? "border-emerald-700 bg-emerald-950/30" :
-                          step.state === "current" ? "border-cyan-400/50 bg-cyan-950/20" :
-                          "border-slate-800 bg-slate-950/60 hover:border-slate-700"
-                        }`}
-                      >
-                        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
-                          step.state === "done" ? "bg-emerald-500 text-slate-950" :
-                          step.state === "current" ? "bg-cyan-400 text-slate-950" :
-                          "bg-slate-800 text-slate-300"
-                        }`}>
-                          {step.state === "done" ? <Check className="h-4 w-4" /> : index + 1}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-bold text-ink">{step.title}</span>
-                          <span className="mt-1 block text-xs text-slate-500">{step.durationMinutes} minutes</span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                {(activeTask.targetTime || driftSignal) && (
-                  <section className="grid gap-4 lg:grid-cols-2">
-                    {activeTask.targetTime && (
-                      <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                        <h3 className="text-lg font-bold text-ink">Time plan</h3>
-                        <dl className="mt-4 space-y-3 text-sm">
-                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Prep starts</dt><dd className="font-bold text-ink">{prepStartLabel}</dd></div>
-                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Leave by</dt><dd className="font-bold text-ink">{hardLeaveLabel}</dd></div>
-                          <div className="flex justify-between gap-4"><dt className="text-slate-500">Target</dt><dd className="font-bold text-ink">{formatTo12Hour(activeTask.targetTime)}</dd></div>
-                        </dl>
-                      </div>
-                    )}
-                    {driftSignal && (
-                      <div className="rounded-xl border border-amber-400/30 bg-amber-950/20 p-5">
-                        <h3 className="text-lg font-bold text-ink">Possible phone drift</h3>
-                        <p className="mt-2 text-sm leading-relaxed text-amber-100/80">{cleanSignalFragment(driftSignal.title, 100)}</p>
-                        <button onClick={handleReturnFromDrift} className="mt-4 rounded-lg bg-amber-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-amber-300">Return to next action</button>
-                      </div>
-                    )}
-                  </section>
-                )}
-
-                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <h3 className="text-lg font-bold text-ink">Delay notes</h3>
-                      <p className="mt-1 text-sm text-slate-400">Use this only when a task ran late and you want future estimates to account for the hidden steps.</p>
-                    </div>
-                    <button onClick={() => setShowDelayModal(true)} className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm font-bold text-ink hover:bg-slate-700">
-                      Log a delay
-                    </button>
-                  </div>
-                  {slipAutopsies.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      {slipAutopsies.slice(0, 3).map(note => (
-                        <div key={note.id} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-sm">
-                          <p className="font-bold text-ink">{note.what_slipped}</p>
-                          <p className="mt-1 text-slate-500">Expected {note.expected_duration}m, actual {note.actual_duration}m</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-              </>
-            )}
-
+          <div className="space-y-4">
             <TaskList
               tasks={storedTasks}
               isLoading={isExtractingTasks && storedTasks.length === 0}
@@ -1794,61 +1764,61 @@ export default function LifeOpsApp() {
               onToggleStep={toggleTaskStep}
               onDismiss={dismissStoredTask}
               onFocus={focusStoredTask}
+              onAskOpus={handleAskOpus}
+              onAdd={() => setShowAddTaskModal(true)}
+              isCoaching={isCoaching}
             />
 
             {renderClaudeReviewPanel()}
             {renderRelevanceAuditPanel()}
-
-
           </div>
         )}
 
         {activeTab === "signals" && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-cyan-400/25 bg-slate-900 p-5">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-4">
+            <section className="glass-panel rounded-3xl p-4">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-sm font-bold text-cyan-200">Suggestions</p>
-                  <h2 className="mt-2 text-2xl font-bold text-ink">Tasks your phone is hinting at</h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">Tap the checkmark to add a task. Tap the X to dismiss it.</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">Inbox</p>
+                  <h2 className="mt-1 text-xl font-semibold text-ink">{taskReadySignals.length} task-ready signal{taskReadySignals.length === 1 ? "" : "s"}</h2>
+                  <p className="mt-1 text-xs text-ink-muted">Turn phone activity into short, usable tasks.</p>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <ActionButton icon={RefreshCw} label={isSyncing ? "Refreshing..." : "Refresh"} hint="Scan the phone" disabled={isSyncing} onClick={() => syncTelemetryLogs(true)} />
-                  <ActionButton icon={Sparkles} label={isExtractingTasks ? "Finding..." : "Find tasks"} hint={`${taskReadySignals.length} task-ready items`} tone="green" disabled={isExtractingTasks || taskReadySignals.length === 0} onClick={() => handleExtractTasks(false)} />
-                </div>
+                <button type="button" onClick={() => syncTelemetryLogs(true)} disabled={isSyncing} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.05] text-ink-muted" aria-label="Refresh phone signals">
+                  <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+                </button>
               </div>
-
-              <div className="mt-4 space-y-3">
-                {isExtractingTasks && (
-                  <div className="space-y-3" aria-hidden>
-                    {[0, 1].map(row => (
-                      <div key={row} className="animate-pulse rounded-lg border border-slate-800 bg-slate-950/60 p-4">
-                        <div className="h-3 w-28 rounded bg-slate-800" />
-                        <div className="mt-3 h-4 w-2/3 rounded bg-slate-800" />
-                        <div className="mt-2 h-3 w-1/2 rounded bg-slate-800/70" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {!isExtractingTasks && (visibleSuggestionTasks.length > 0 ? visibleSuggestionTasks.map(renderTaskCard) : (
-                  <EmptyState
-                    title="No suggestions yet"
-                    body={taskReadySignals.length > 0 ? "Phone signals are loaded. Tap Find tasks to turn them into suggestions." : "Refresh to look for messages, missed calls, calendar events, notifications, and screen text with a real action."}
-                  />
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => handleExtractTasks(false)}
+                disabled={isExtractingTasks || taskReadySignals.length === 0}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink disabled:opacity-45"
+              >
+                <Sparkles className="h-4 w-4" /> {isExtractingTasks ? "Organizing..." : "Organize tasks"}
+              </button>
             </section>
 
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h2 className="text-lg font-bold text-ink">Paste a phone item</h2>
-              <p className="mt-2 text-sm leading-relaxed text-slate-400">Useful in desktop preview, or when Android did not expose a specific message yet.</p>
-              <div className="mt-4 grid gap-3 md:grid-cols-[160px_1fr]">
+            <section className="space-y-2.5">
+              {isExtractingTasks && [0, 1, 2].map(row => (
+                <div key={row} className="animate-pulse rounded-2xl border border-white/[0.07] bg-white/[0.04] p-4">
+                  <div className="h-4 w-3/4 rounded bg-white/[0.08]" />
+                  <div className="mt-3 h-3 w-2/5 rounded bg-white/[0.06]" />
+                </div>
+              ))}
+              {!isExtractingTasks && (visibleSuggestionTasks.length > 0 ? visibleSuggestionTasks.map(renderTaskCard) : (
+                <EmptyState title="No suggestions yet" body={taskReadySignals.length > 0 ? "Signals are ready. Organize them into tasks when you are ready." : "Refresh to look for concrete requests, missed calls, deadlines, and appointments."} />
+              ))}
+            </section>
+
+            <details className="rounded-2xl border border-white/[0.07] bg-white/[0.025]">
+              <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3.5 text-sm font-medium text-ink-muted">Add a phone item manually <ChevronDown className="h-4 w-4" /></summary>
+              <div className="border-t border-white/[0.06] p-4">
+              <div className="grid gap-3 sm:grid-cols-[130px_1fr]">
                 <label className="block">
-                  <span className="text-sm font-bold text-slate-300">Source</span>
+                  <span className="text-xs font-medium text-ink-muted">Source</span>
                   <select
                     value={manualSignalSource}
                     onChange={event => setManualSignalSource(event.target.value as SentinelEvent["source"])}
-                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                    className="mt-2 w-full rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-sm text-ink outline-none focus:border-primary/50"
                   >
                     <option value="sms">SMS</option>
                     <option value="notification">Notification</option>
@@ -1858,74 +1828,72 @@ export default function LifeOpsApp() {
                   </select>
                 </label>
                 <label className="block">
-                  <span className="text-sm font-bold text-slate-300">Title</span>
+                  <span className="text-xs font-medium text-ink-muted">Title</span>
                   <input
                     value={manualSignalTitle}
                     onChange={event => setManualSignalTitle(event.target.value)}
-                    className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                    className="mt-2 w-full rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-sm text-ink outline-none focus:border-primary/50"
                     placeholder="Who or what is this from?"
                   />
                 </label>
               </div>
               <label className="mt-3 block">
-                <span className="text-sm font-bold text-slate-300">Text</span>
+                <span className="text-xs font-medium text-ink-muted">Phone text</span>
                 <textarea
                   value={manualSignalContent}
                   onChange={event => setManualSignalContent(event.target.value)}
                   rows={4}
-                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400"
+                  className="mt-2 w-full rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-sm text-ink outline-none focus:border-primary/50"
                   placeholder="Paste the real message, reminder, event, or screen text here."
                 />
               </label>
-              <div className="mt-4 flex justify-end">
+              <div className="mt-3 flex justify-end">
                 <button
                   onClick={handleAddManualSignal}
-                  className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300"
+                  className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink"
                 >
                   Save and suggest
                 </button>
               </div>
-            </section>
+              </div>
+            </details>
 
-            <section className="space-y-3">
-              <h2 className="text-lg font-bold text-ink">Recent phone signals</h2>
-              {visibleSignals.length > 0 ? visibleSignals.map(renderSignalCard) : (
-                <EmptyState
-                  title="No useful phone signals visible"
-                  body="Open Access if the app is not receiving notifications, screen text, SMS, call log, calendar, or usage data."
-                />
-              )}
-            </section>
+            <details className="rounded-2xl border border-white/[0.07] bg-white/[0.025]">
+              <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3.5 text-sm font-medium text-ink-muted">Raw phone context <span className="flex items-center gap-2 text-xs text-ink-faint">{visibleSignals.length} signals <ChevronDown className="h-4 w-4" /></span></summary>
+              <div className="space-y-2 border-t border-white/[0.06] p-3">
+                {visibleSignals.length > 0 ? visibleSignals.map(renderSignalCard) : <EmptyState title="No phone context" body="Check Setup if LifeOps is not receiving phone data." />}
+              </div>
+            </details>
           </div>
         )}
 
         {activeTab === "access" && (
-          <div className="space-y-5">
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-4">
+            <section className="glass-panel rounded-3xl p-4">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-sm font-bold text-cyan-200">Setup</p>
-                  <h2 className="mt-2 text-2xl font-bold text-ink">{readyPermissionCount}/4 access groups ready</h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">These buttons open Android settings. After granting access, come back here and tap Refresh status.</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">Setup</p>
+                  <h2 className="mt-1 text-xl font-semibold text-ink">{readyPermissionCount}/4 access groups ready</h2>
+                  <p className="mt-1 text-xs leading-5 text-ink-muted">LifeOps needs these Android permissions to see useful phone signals.</p>
                 </div>
-                <ActionButton icon={RefreshCw} label="Refresh status" hint="Recheck Android grants" onClick={refreshAndroidStatus} />
+                <button type="button" onClick={refreshAndroidStatus} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.05] text-ink-muted" aria-label="Refresh permission status"><RefreshCw className="h-4 w-4" /></button>
               </div>
             </section>
 
-            <section className="grid gap-3 md:grid-cols-2">
+            <section className="grid gap-2.5 sm:grid-cols-2">
               {permissionItems.map(item => (
-                <article key={item.key} className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+                <article key={item.key} className="rounded-2xl border border-white/[0.08] bg-white/[0.045] p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="text-base font-bold text-ink">{item.label}</h3>
-                      <p className="mt-2 text-sm leading-relaxed text-slate-400">{item.detail}</p>
+                      <h3 className="text-sm font-semibold text-ink">{item.label}</h3>
+                      <p className="mt-1.5 text-xs leading-5 text-ink-muted">{item.detail}</p>
                     </div>
                     <Pill tone={item.isReady ? "success" : "warn"}>{item.isReady ? "Ready" : "Needs setup"}</Pill>
                   </div>
                   <button
                     onClick={item.onAction}
                     disabled={!isAndroidBridgeAvailable}
-                    className="mt-5 w-full rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-left text-sm font-bold text-ink hover:bg-slate-700 disabled:opacity-45"
+                    className="mt-3 w-full rounded-xl border border-white/[0.08] bg-white/[0.055] px-3 py-2.5 text-left text-xs font-semibold text-ink disabled:opacity-45"
                   >
                     {isAndroidBridgeAvailable ? item.actionLabel : "Available on Android"}
                   </button>
@@ -1933,11 +1901,11 @@ export default function LifeOpsApp() {
               ))}
             </section>
 
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+            <section className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <h3 className="text-lg font-bold text-ink">Server &amp; AI health</h3>
-                  <p className="mt-2 text-sm text-slate-400">
+                  <h3 className="text-base font-semibold text-ink">Server &amp; AI health</h3>
+                  <p className="mt-1.5 text-xs leading-5 text-ink-muted">
                     {canUseLifeOpsServer
                       ? "Live status from the Render/API host used for AI and telemetry ingest."
                       : "No server URL configured in this build. AI falls back to local rules."}
@@ -1971,23 +1939,23 @@ export default function LifeOpsApp() {
               </div>
               {serverHealth ? (
                 <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
                     <p className="text-slate-500">Provider</p>
                     <p className="font-bold text-ink">{serverHealth.modelProvider || "unknown"}</p>
                   </div>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
                     <p className="text-slate-500">Runtime</p>
                     <p className="font-bold text-ink">{serverHealth.modelRuntimeStatus || "unknown"}</p>
                   </div>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
-                    <p className="text-slate-500">Model</p>
-                    <p className="font-bold text-ink">{serverHealth.model || "—"}</p>
+                    <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
+                    <p className="text-slate-500">Routine model</p>
+                    <p className="font-bold text-ink">{serverHealth.fastModel || serverHealth.model || "Not reported"}</p>
                   </div>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
-                    <p className="text-slate-500">Mode</p>
-                    <p className="font-bold text-ink">{serverHealth.mode || "—"}</p>
+                    <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
+                    <p className="text-slate-500">Deep model</p>
+                    <p className="font-bold text-ink">{serverHealth.deepModel || "Opus"}</p>
                   </div>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
                     <p className="text-slate-500">AI credential</p>
                     <p className="font-bold text-ink">
                       {serverHealth.aiAuth?.anthropicCredentialShape === "api_key"
@@ -2001,7 +1969,7 @@ export default function LifeOpsApp() {
                               : "Missing"}
                     </p>
                   </div>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                    <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
                     <p className="text-slate-500">Last AI success</p>
                     <p className="font-bold text-ink">
                       {serverHealth.claudeLastSuccessAt
@@ -2025,9 +1993,9 @@ export default function LifeOpsApp() {
               )}
             </section>
 
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h3 className="text-lg font-bold text-ink">Bridge status</h3>
-              <p className="mt-2 text-sm text-slate-400">{isAndroidBridgeAvailable ? "The installed APK is connected to the native Android bridge." : "This browser preview cannot read phone data directly. Install/open the Android app for live capture."}</p>
+            <section className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">
+              <h3 className="text-base font-semibold text-ink">Android bridge</h3>
+              <p className="mt-1.5 text-xs leading-5 text-ink-muted">{isAndroidBridgeAvailable ? "The installed app is connected and can read approved phone sources." : "Browser preview cannot read phone data directly."}</p>
               {androidBridgeStatus && (
                 <>
                   <div className="mt-4 grid gap-2 sm:grid-cols-2">
@@ -2046,7 +2014,7 @@ export default function LifeOpsApp() {
                       .map(flag => {
                         const granted = Boolean((androidBridgeStatus as Record<string, unknown>)[flag.key]);
                         return (
-                          <div key={flag.key} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm">
+                          <div key={flag.key} className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
                             <span className="text-slate-300">{flag.label}</span>
                             <Pill tone={granted ? "success" : "warn"}>{granted ? "Granted" : "Off"}</Pill>
                           </div>
@@ -2078,8 +2046,8 @@ export default function LifeOpsApp() {
         </AnimatePresence>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-800 bg-surface/95 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur">
-        <div className="mx-auto grid max-w-5xl grid-cols-4 gap-1 sm:gap-2">
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.07] bg-[#080d17]/96 pb-[max(.35rem,env(safe-area-inset-bottom))] backdrop-blur-2xl" aria-label="Primary navigation">
+        <div className="mx-auto grid max-w-lg grid-cols-4 px-2 pt-1.5">
           {([
             { key: "today", label: "Now", icon: Clock },
             { key: "signals", label: "Inbox", icon: Inbox },
@@ -2090,23 +2058,115 @@ export default function LifeOpsApp() {
             const active = activeTab === item.key;
             return (
               <button
+                type="button"
                 key={item.key}
                 onClick={() => setActiveTab(item.key)}
-                className={`flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-xl text-xs font-semibold transition-colors ${
-                  active ? "bg-primary text-primary-ink" : "text-ink-muted hover:bg-surface-alt hover:text-ink"
-                }`}
+                className={`relative flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl text-[10px] font-medium transition-colors ${active ? "text-primary" : "text-ink-faint hover:text-ink"}`}
+                aria-current={active ? "page" : undefined}
               >
-                <Icon className="h-5 w-5" />
-                {item.label}
+                <span className={`relative flex h-7 w-10 items-center justify-center rounded-xl transition-colors ${active ? "bg-primary/[0.1]" : ""}`}>
+                  <Icon className={`h-[19px] w-[19px] ${active ? "fill-primary/15" : ""}`} strokeWidth={active ? 2.4 : 1.8} />
+                  {item.key === "signals" && taskReadySignals.length > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[8px] font-bold text-primary-ink">{Math.min(99, taskReadySignals.length)}</span>
+                  )}
+                </span>
+                <span>{item.label}</span>
+                {active && <motion.span layoutId="active-tab" className="absolute inset-x-7 top-0 h-0.5 rounded-full bg-primary shadow-[0_0_10px_rgb(20_240_201_/_0.75)]" />}
               </button>
             );
           })}
         </div>
       </nav>
 
+      {coachTask && (
+        <div className="fixed inset-0 z-50 flex items-end bg-black/75 p-3 backdrop-blur-sm sm:items-center sm:justify-center">
+          <section className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-accent/30 bg-[#0d1422] shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-white/[0.07] bg-[#0d1422]/95 p-4 backdrop-blur-xl">
+              <div>
+                <div className="flex items-center gap-2 text-accent"><BrainCircuit className="h-4 w-4" /><span className="text-[11px] font-semibold uppercase tracking-wide">Opus task coach</span></div>
+                <h2 className="mt-1.5 text-lg font-semibold leading-6 text-ink">{coachTask.title}</h2>
+              </div>
+              <button type="button" onClick={() => { setCoachTask(null); setCoachPlan(null); }} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-ink-muted" aria-label="Close Opus plan"><X className="h-4 w-4" /></button>
+            </div>
+
+            <div className="p-4">
+              {isCoaching && (
+                <div className="py-10 text-center">
+                  <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-accent/20 border-t-accent" />
+                  <p className="mt-4 text-sm text-ink-muted">Building a smaller, more realistic route...</p>
+                </div>
+              )}
+
+              {coachPlan && (
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-primary/20 bg-primary/[0.06] p-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-primary">Start here</p>
+                    <p className="mt-1.5 text-base font-medium leading-6 text-ink">{coachPlan.firstStep}</p>
+                    <p className="mt-2 text-xs leading-5 text-ink-muted">{coachPlan.summary}</p>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-semibold text-ink">Small chunks</h3>
+                    <ol className="mt-2 space-y-2">
+                      {coachPlan.chunks.map((chunk, index) => (
+                        <li key={`${chunk.title}-${index}`} className="flex items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.035] p-3">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-semibold text-indigo-100">{index + 1}</span>
+                          <span className="min-w-0 flex-1 text-sm text-ink">{chunk.title}</span>
+                          <span className="text-xs text-ink-faint">{chunk.minutes}m</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/[0.07] bg-white/[0.035] p-4">
+                    <h3 className="text-sm font-semibold text-ink">Low-energy version</h3>
+                    <p className="mt-1.5 text-sm leading-6 text-ink-muted">{coachPlan.lowEnergyVersion}</p>
+                  </div>
+
+                  {coachPlan.frictionPlan.length > 0 && (
+                    <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.045] p-4">
+                      <h3 className="text-sm font-semibold text-amber-100">If something gets in the way</h3>
+                      <div className="mt-2 space-y-2">
+                        {coachPlan.frictionPlan.map((item, index) => <p key={index} className="text-xs leading-5 text-amber-50/75"><span className="font-semibold text-amber-100">{item.friction}:</span> {item.response}</p>)}
+                      </div>
+                    </div>
+                  )}
+
+                  {coachPlan.behavioralActivation && (
+                    <div className="rounded-2xl border border-primary/15 bg-primary/[0.035] p-4">
+                      <h3 className="text-sm font-semibold text-ink">Behavioral activation</h3>
+                      <dl className="mt-2 space-y-2 text-xs leading-5 text-ink-muted">
+                        <div><dt className="font-semibold text-ink">Why it matters</dt><dd>{coachPlan.behavioralActivation.valueLink}</dd></div>
+                        <div><dt className="font-semibold text-ink">Graded start</dt><dd>{coachPlan.behavioralActivation.gradedStart}</dd></div>
+                        <div><dt className="font-semibold text-ink">Suggested window</dt><dd>{coachPlan.behavioralActivation.scheduledWindow}</dd></div>
+                      </dl>
+                    </div>
+                  )}
+
+                  {coachPlan.habitPlan && (
+                    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.035] p-4">
+                      <h3 className="text-sm font-semibold text-ink">Make it repeatable</h3>
+                      <p className="mt-2 text-xs leading-5 text-ink-muted"><span className="font-semibold text-ink">Cue:</span> {coachPlan.habitPlan.cue}</p>
+                      <p className="mt-1 text-xs leading-5 text-ink-muted"><span className="font-semibold text-ink">Routine:</span> {coachPlan.habitPlan.routine}</p>
+                      <p className="mt-1 text-xs leading-5 text-ink-muted"><span className="font-semibold text-ink">Reward:</span> {coachPlan.habitPlan.reward}</p>
+                    </div>
+                  )}
+
+                  <p className="text-center text-[10px] text-ink-faint">Generated by {coachPlan.model || "Opus"}. Review before applying.</p>
+                  <div className="grid grid-cols-2 gap-2 pb-[max(0rem,env(safe-area-inset-bottom))]">
+                    <button type="button" onClick={() => { setCoachTask(null); setCoachPlan(null); }} className="rounded-xl border border-white/[0.08] px-4 py-3 text-sm font-medium text-ink-muted">Keep current</button>
+                    <button type="button" onClick={handleApplyCoachPlan} className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink">Use this plan</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
       {showStuckPanel && (
-        <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-4 sm:items-center sm:justify-center">
-          <div className="w-full max-w-lg rounded-xl border border-amber-400/30 bg-slate-900 p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end bg-black/75 p-3 backdrop-blur-sm sm:items-center sm:justify-center">
+          <div className="w-full max-w-lg rounded-3xl border border-amber-400/25 bg-[#0d1422] p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-ink">Only these actions matter now</h2>
@@ -2124,7 +2184,7 @@ export default function LifeOpsApp() {
                     updateTaskStepState(activeTask!.id, step.id);
                     setShowStuckPanel(false);
                   }}
-                  className="flex w-full items-center gap-3 rounded-lg border border-slate-700 bg-slate-950 p-4 text-left hover:border-cyan-400/50"
+                  className="flex w-full items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 text-left hover:border-primary/40"
                 >
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-400 text-sm font-bold text-slate-950">{index + 1}</span>
                   <span className="text-sm font-bold text-ink">{step.title}</span>
@@ -2139,8 +2199,8 @@ export default function LifeOpsApp() {
       )}
 
       {showAddTaskModal && (
-        <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-4 sm:items-center sm:justify-center">
-          <div className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end bg-black/75 p-3 backdrop-blur-sm sm:items-center sm:justify-center">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-white/[0.1] bg-[#0d1422] p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-ink">Add a current task</h2>
@@ -2153,36 +2213,36 @@ export default function LifeOpsApp() {
             <div className="mt-5 space-y-4">
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Task name</span>
-                <input value={newTaskTitle} onChange={event => setNewTaskTitle(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" placeholder="What needs to happen?" />
+                <input value={newTaskTitle} onChange={event => setNewTaskTitle(event.target.value)} className="mt-2 w-full rounded-xl border border-white/[0.09] bg-black/25 px-3 py-3 text-ink outline-none focus:border-primary/50" placeholder="What needs to happen?" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">First physical action</span>
-                <input value={newTaskNextPhysical} onChange={event => setNewTaskNextPhysical(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" placeholder="The first thing your body does" />
+                <input value={newTaskNextPhysical} onChange={event => setNewTaskNextPhysical(event.target.value)} className="mt-2 w-full rounded-xl border border-white/[0.09] bg-black/25 px-3 py-3 text-ink outline-none focus:border-primary/50" placeholder="The first thing your body does" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Estimated minutes</span>
-                <input type="number" min={5} value={newTaskDuration} onChange={event => setNewTaskDuration(Number(event.target.value) || 15)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
+                <input type="number" min={5} value={newTaskDuration} onChange={event => setNewTaskDuration(Number(event.target.value) || 15)} className="mt-2 w-full rounded-xl border border-white/[0.09] bg-black/25 px-3 py-3 text-ink outline-none focus:border-primary/50" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Target time</span>
-                <input type="time" value={newTaskTargetTime} onChange={event => setNewTaskTargetTime(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" />
+                <input type="time" value={newTaskTargetTime} onChange={event => setNewTaskTargetTime(event.target.value)} className="mt-2 w-full rounded-xl border border-white/[0.09] bg-black/25 px-3 py-3 text-ink outline-none focus:border-primary/50" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-300">Steps</span>
-                <textarea value={newStepsInput} onChange={event => setNewStepsInput(event.target.value)} rows={4} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 text-ink outline-none focus:border-cyan-400" placeholder="One step per line. Optional: add minutes like (10m)." />
+                <textarea value={newStepsInput} onChange={event => setNewStepsInput(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/[0.09] bg-black/25 px-3 py-3 text-ink outline-none focus:border-primary/50" placeholder="One step per line. Optional: add minutes like (10m)." />
               </label>
             </div>
             <div className="mt-5 flex justify-end gap-3">
               <button onClick={() => setShowAddTaskModal(false)} className="rounded-lg px-4 py-3 text-sm font-bold text-slate-300 hover:bg-slate-800">Cancel</button>
-              <button onClick={handleCreateTask} className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300">Make current task</button>
+              <button onClick={handleCreateTask} className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink">Make current task</button>
             </div>
           </div>
         </div>
       )}
 
       {showDelayModal && (
-        <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-4 sm:items-center sm:justify-center">
-          <div className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end bg-black/75 p-3 backdrop-blur-sm sm:items-center sm:justify-center">
+          <div className="w-full max-w-lg rounded-3xl border border-white/[0.1] bg-[#0d1422] p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-ink">Log a delay</h2>
@@ -2218,7 +2278,7 @@ export default function LifeOpsApp() {
             </div>
             <div className="mt-5 flex justify-end gap-3">
               <button onClick={() => setShowDelayModal(false)} className="rounded-lg px-4 py-3 text-sm font-bold text-slate-300 hover:bg-slate-800">Cancel</button>
-              <button onClick={handleCreateDelayNote} className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300">Save delay note</button>
+              <button onClick={handleCreateDelayNote} className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink">Save delay note</button>
             </div>
           </div>
         </div>

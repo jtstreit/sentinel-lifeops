@@ -201,10 +201,10 @@ function compileTask(primary: SentinelEvent, signals: SentinelEvent[], situation
     id: `smart-task-${situationId}`,
     associatedAnchorId: situationId,
     avoidanceTarget: evidenceCount > 1
-      ? "Opening each related signal repeatedly instead of closing the loop once"
+      ? "Rereading related messages before doing the task"
       : task.avoidanceTarget,
     nextPhysicalAction: evidenceCount > 1
-      ? `${firstStepTitle} Use the related signals as context, then close the loop once.`
+      ? `${firstStepTitle} Check the related signals only if you need context.`
       : task.nextPhysicalAction,
   };
 }

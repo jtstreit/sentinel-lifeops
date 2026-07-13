@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutiveTask, SentinelEvent } from "./types";
 import {
+  buildTaskFromSignal,
   coerceTimeString,
   extractTasksHeuristic,
   inferTargetTimeFromSignal,
@@ -9,6 +10,7 @@ import {
   mergeStoredTasks,
   migrateStoredState,
   normalizeStoredTask,
+  normalizeHumanTaskTitle,
   normalizeTask,
   sanitizeExtractedTasks,
   scoreSignal,
@@ -89,7 +91,8 @@ describe("lifeops scoring rules", () => {
     expect(isTaskCandidateSignal(placeholder, NOW)).toBe(false);
 
     const tasks = extractTasksHeuristic([missedCall, message, placeholder], NOW);
-    expect(tasks.map(task => task.title)).toContain("Return missed call from Dad");
+    expect(tasks.map(task => task.title)).toContain("Call Dad back");
+    expect(tasks.map(task => task.title)).toContain("Pick up meds");
     expect(tasks.find(task => task.title.includes("meds"))?.targetTime).toBe("16:00");
   });
 
@@ -106,7 +109,7 @@ describe("lifeops scoring rules", () => {
     expect(isTaskCandidateSignal(foregroundText, NOW)).toBe(true);
 
     const task = extractTasksHeuristic([foregroundText], NOW)[0];
-    expect(task.title).toContain("Prepare item");
+    expect(task.title).toBe("Bring the paperwork to the appointment");
     expect(task.targetTime).toBe("14:00");
   });
 
@@ -271,9 +274,9 @@ describe("server-facing heuristic aliases", () => {
     const tasks = extractTasksHeuristic(fixtures.map(fixture => fixture.log), NOW);
     expect(tasks).toHaveLength(3);
     expect(tasks.map(task => task.title)).toEqual([
-      "Send or submit: Could you send the form by 3pm?",
-      "Prepare item: Please bring paperwork at 2pm.",
-      "Return missed call from Mom",
+      "Send the form",
+      "Bring paperwork",
+      "Call Mom back",
     ]);
     expect(tasks[0].targetTime).toBe("15:00");
     expect(tasks[1].targetTime).toBe("14:00");
@@ -306,6 +309,38 @@ describe("AI task sanitation", () => {
   it("drops invalid urgency values instead of storing them", () => {
     const task = normalizeTask(aiTask({ urgency: "immediately" }));
     expect(task!.urgency).toBeUndefined();
+  });
+
+  it("removes machine labels and polite request wrappers from task titles", () => {
+    expect(normalizeHumanTaskTitle("Handle: Could you send the form by 3pm?")).toBe("Send the form");
+    expect(normalizeHumanTaskTitle("Prepare item: Please bring paperwork at 2pm.")).toBe("Bring paperwork");
+    expect(normalizeTask(aiTask({ title: "Send or submit: Could you email Sam by 5pm?" }))!.title).toBe("Email Sam");
+  });
+
+  it("does not leave a dangling time preposition in human task titles", () => {
+    expect(normalizeHumanTaskTitle("Can you confirm the authorization by tomorrow?"))
+      .toBe("Confirm the authorization");
+  });
+
+  it("turns package-prefixed notification titles into readable tasks", () => {
+    expect(normalizeHumanTaskTitle("Handle: com.openai.chatgpt: Cobra Daily Brief — July 7, 2026 1) Urgent"))
+      .toBe("Review Cobra Daily Brief");
+    expect(normalizeHumanTaskTitle("Return missed call from Mom")).toBe("Call Mom back");
+  });
+
+  it("keeps the original signal attached to a locally suggested task", () => {
+    const source = signal({
+      id: "sms-nipa",
+      source: "sms",
+      title: "Nipa",
+      content: "Can you confirm the grandparents' authorization by tomorrow?",
+      capturedAtEpochMillis: Date.now(),
+    });
+
+    const task = buildTaskFromSignal(source, 0);
+
+    expect(task?.title).toBe("Confirm the grandparents' authorization");
+    expect(task?.sourceLogIds).toEqual(["sms-nipa"]);
   });
 
   it("strips forged sourceLogIds and situationIds the request never contained", () => {
@@ -353,11 +388,50 @@ describe("stored task normalization and merge", () => {
     expect(stored!.steps.map(step => step.state)).toEqual(["done", "done"]);
   });
 
+  it("humanizes legacy stored task titles and steps", () => {
+    const stored = normalizeStoredTask({
+      id: "legacy-brief",
+      title: "Handle: com.openai.chatgpt: Cobra Daily Brief — July 7, 2026",
+      nextPhysicalAction: "Act on: com.openai.chatgpt: Cobra Daily Brief — July 7, 2026",
+      steps: [{ id: "legacy-step", title: "Act on: com.openai.chatgpt: Cobra Daily Brief — July 7, 2026", durationMinutes: 5, state: "current" }],
+    });
+
+    expect(stored?.title).toBe("Review Cobra Daily Brief");
+    expect(stored?.nextPhysicalAction).toBe("Review Cobra Daily Brief");
+    expect(stored?.steps[0].title).toBe("Review Cobra Daily Brief");
+  });
+
   it("defaults status from isCompleted and rejects tasks without id or title", () => {
     expect(normalizeStoredTask({ id: "t2", title: "Open task", isCompleted: false }, 500)!.status).toBe("open");
     expect(normalizeStoredTask({ id: "t3", title: "Done task", isCompleted: true }, 500)!.status).toBe("done");
     expect(normalizeStoredTask({ title: "No id" })).toBeNull();
     expect(normalizeStoredTask({ id: "t4" })).toBeNull();
+  });
+
+  it("preserves and bounds applied coaching guidance at the storage boundary", () => {
+    const stored = normalizeStoredTask({
+      id: "coached",
+      title: "Call Mom",
+      coachGuidance: {
+        summary: "  Make the call easier to start.  ",
+        lowEnergyVersion: "Send a short text.",
+        frictionPlan: [{ friction: "Unsure what to say", response: "Write one question first." }],
+        habitPlan: { cue: "After lunch", routine: "Check missed calls", reward: "Clear the badge" },
+        behavioralActivation: { valueLink: "Stay connected", gradedStart: "Open Contacts", scheduledWindow: "1 PM" },
+        generatedAtEpochMillis: 123,
+        engine: "claude-sdk",
+        model: "claude-opus-test",
+      },
+    });
+
+    expect(stored?.coachGuidance).toMatchObject({
+      summary: "Make the call easier to start.",
+      lowEnergyVersion: "Send a short text.",
+      frictionPlan: [{ friction: "Unsure what to say", response: "Write one question first." }],
+      generatedAtEpochMillis: 123,
+      engine: "claude-sdk",
+      model: "claude-opus-test",
+    });
   });
 
   it("merges newer-wins by updatedAtEpochMillis in both directions", () => {

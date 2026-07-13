@@ -54,6 +54,17 @@ export interface ReverseStep {
 
 export type TaskUrgency = "now" | "soon" | "later";
 
+export interface AppliedCoachGuidance {
+  summary: string;
+  lowEnergyVersion: string;
+  frictionPlan: Array<{ friction: string; response: string }>;
+  habitPlan?: { cue: string; routine: string; reward: string } | null;
+  behavioralActivation?: { valueLink: string; gradedStart: string; scheduledWindow: string } | null;
+  generatedAtEpochMillis: number;
+  engine?: string;
+  model?: string;
+}
+
 export interface ExecutiveTask {
   id: string;
   title: string;
@@ -70,6 +81,9 @@ export interface ExecutiveTask {
   urgency?: TaskUrgency;
   sourceLogIds?: string[];
   situationId?: string | null;
+  // Saved when an on-demand coaching plan is applied, so the useful fallback
+  // guidance remains attached to the task without another model request.
+  coachGuidance?: AppliedCoachGuidance;
 }
 
 export type StoredTaskStatus = "open" | "done" | "dismissed";

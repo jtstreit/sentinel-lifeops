@@ -12,50 +12,50 @@
 */
 @theme {
   /* --- Semantic tokens (prefer these in new / refactored components) --- */
-  --color-bg: #0f1320;
-  --color-surface: #161b2b;
-  --color-surface-alt: #1c2233;
-  --color-surface-raised: #232b40;
-  --color-input: #0c101b;
+  --color-bg: #070b13;
+  --color-surface: #0f1726;
+  --color-surface-alt: #151f31;
+  --color-surface-raised: #1b283d;
+  --color-input: #090f1b;
 
-  --color-line: #2b3349;
-  --color-line-subtle: #222a3c;
-  --color-line-strong: #3a4869;
+  --color-line: #263750;
+  --color-line-subtle: #1b2b40;
+  --color-line-strong: #35506f;
 
-  --color-ink: #f2f5fb;
-  --color-ink-muted: #aeb8cb;
-  --color-ink-faint: #7e8aa0;
+  --color-ink: #f7fbff;
+  --color-ink-muted: #a8b4c7;
+  --color-ink-faint: #71819a;
 
-  --color-primary: #5cc2b1;
-  --color-primary-ink: #06241f;
-  --color-primary-soft: #143b36;
-  --color-accent: #8a9bf0;
-  --color-accent-soft: #1b2347;
+  --color-primary: #14f0c9;
+  --color-primary-ink: #031714;
+  --color-primary-soft: #0a3535;
+  --color-accent: #8c9cff;
+  --color-accent-soft: #20284d;
 
   --color-success: #56d08a;
   --color-warn: #f4c152;
   --color-danger: #f47b7b;
 
   /* --- Legacy ramp remap: surfaces + text (slate) --- */
-  --color-slate-950: #0b0e17;
-  --color-slate-900: #161b2b;
-  --color-slate-800: #232b40;
-  --color-slate-700: #2b3349;
-  --color-slate-600: #3a4869;
-  --color-slate-500: #7e8aa0;
-  --color-slate-400: #aeb8cb;
+  --color-slate-950: #070b13;
+  --color-slate-900: #0f1726;
+  --color-slate-800: #1b283d;
+  --color-slate-700: #263750;
+  --color-slate-600: #35506f;
+  --color-slate-500: #71819a;
+  --color-slate-400: #a8b4c7;
   --color-slate-300: #c3ccdb;
   --color-slate-200: #dde3ee;
   --color-slate-100: #eef1f7;
   --color-slate-50: #f2f5fb;
 
   /* --- cyan -> healing teal (brand / primary) --- */
-  --color-cyan-950: #0e2b27;
-  --color-cyan-400: #5cc2b1;
-  --color-cyan-300: #7fd0c2;
-  --color-cyan-200: #9bdbd0;
-  --color-cyan-100: #c2eee6;
-  --color-cyan-50: #e1f5ee;
+  --color-cyan-950: #062b2c;
+  --color-cyan-400: #14f0c9;
+  --color-cyan-300: #5af5d8;
+  --color-cyan-200: #8ff8e4;
+  --color-cyan-100: #c5fbf1;
+  --color-cyan-50: #e8fffa;
 
   /* --- amber -> warm gold (warnings / attention) --- */
   --color-amber-950: #2a2208;
@@ -80,4 +80,60 @@
   --color-rose-200: #fbd0d0;
   --color-rose-100: #fde4e4;
   --color-rose-50: #fcecec;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  html {
+    background: var(--color-bg);
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background:
+      radial-gradient(circle at 50% -12rem, rgb(38 71 105 / 0.42), transparent 34rem),
+      var(--color-bg);
+    background-attachment: fixed;
+  }
+
+  button, input, textarea {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgb(20 240 201 / 0.3);
+  }
+}
+
+@utility glass-panel {
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.075), rgb(255 255 255 / 0.035));
+  border: 1px solid rgb(129 218 225 / 0.17);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 18px 45px rgb(0 0 0 / 0.2);
+  backdrop-filter: blur(18px);
+}
+
+@utility shadow-soft {
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.035), 0 8px 24px rgb(0 0 0 / 0.16);
+}
+
+@utility shadow-card {
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04), 0 16px 38px rgb(0 0 0 / 0.24);
 }

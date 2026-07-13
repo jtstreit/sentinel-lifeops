@@ -1,87 +1,119 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   Bell,
   CalendarDays,
   Check,
+  ChevronDown,
   MessageSquare,
   Smartphone,
   X,
   Zap,
 } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import { formatTo12Hour } from "../cartographer";
 import type { SmartSituation } from "../decisionEngine";
-import type { ExecutiveTask } from "../types";
-import { Pill } from "./ui";
+import { cleanSignalFragment } from "../lifeopsRules";
+import type { ExecutiveTask, SentinelEvent, SentinelSource } from "../types";
 
-function sourceIcon(source: SmartSituation["primarySignal"]["source"]) {
+function sourceIcon(source: SentinelSource) {
   if (source === "sms") return MessageSquare;
   if (source === "calendar") return CalendarDays;
-  if (source === "screen_text") return Smartphone;
-  if (source === "app_usage") return Smartphone;
+  if (source === "screen_text" || source === "app_usage") return Smartphone;
   if (source === "location") return Zap;
   return Bell;
 }
 
-const urgencyTone: Record<string, "danger" | "warn" | "neutral"> = {
-  now: "danger",
-  soon: "warn",
-  later: "neutral"
-};
-
-const confidenceTone: Record<string, "success" | "warn" | "danger"> = {
-  high: "success",
-  medium: "warn",
-  low: "danger"
+const urgencyLabel: Record<string, string> = {
+  now: "High",
+  soon: "Medium",
+  later: "Low",
 };
 
 export function SmartSuggestionCard({
   task,
   situation,
+  sourceSignal,
   targetTime,
   onApprove,
   onDismiss,
 }: {
   task: ExecutiveTask;
   situation?: SmartSituation;
+  sourceSignal?: SentinelEvent;
   targetTime?: string | null;
   onApprove: () => void;
   onDismiss: () => void;
 }) {
-  const SourceIcon = situation ? sourceIcon(situation.primarySignal.source) : Bell;
+  const reduceMotion = useReducedMotion();
+  const [contextOpen, setContextOpen] = useState(false);
+  const originalSignal = situation?.primarySignal || sourceSignal;
+  const SourceIcon = originalSignal ? sourceIcon(originalSignal.source) : Bell;
+  const sourceText = originalSignal
+    ? cleanSignalFragment(originalSignal.content || originalSignal.title, 320)
+    : "No original phone context is available for this suggestion.";
 
   return (
-    <article className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900 p-3 shadow-sm">
-      <div className="mt-0.5 rounded-lg bg-cyan-400/10 p-2 text-cyan-200">
-        <SourceIcon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <h3 className="text-base font-bold leading-tight text-ink">{task.title}</h3>
-        <p className="mt-0.5 text-sm text-slate-400">{task.nextPhysicalAction}</p>
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          {task.urgency && <Pill tone={urgencyTone[task.urgency] || "neutral"}>{task.urgency}</Pill>}
-          {situation && <Pill tone={confidenceTone[situation.confidence] || "neutral"}>{situation.confidence}</Pill>}
-          <Pill tone="neutral">{task.estimatedDurationMinutes}m</Pill>
-          {targetTime && <Pill tone="warn">{formatTo12Hour(targetTime)}</Pill>}
+    <article className="glass-panel overflow-hidden rounded-2xl">
+      <div className="flex items-start gap-3 p-4">
+        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <SourceIcon className="h-[18px] w-[18px]" aria-hidden="true" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[15px] font-semibold leading-5 text-ink">{task.title}</h3>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="rounded-full border border-primary/30 px-2.5 py-0.5 font-medium text-primary">
+              {urgencyLabel[task.urgency || "soon"] || "Medium"}
+            </span>
+            <span className="text-ink-muted">{task.estimatedDurationMinutes} min</span>
+            {targetTime && <span className="text-ink-muted">by {formatTo12Hour(targetTime)}</span>}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 gap-1.5">
+          <button
+            type="button"
+            onClick={onApprove}
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-ink shadow-[0_0_20px_rgb(20_240_201_/_0.22)] transition-transform active:scale-95"
+            aria-label={`Add to tasks: ${task.title}`}
+            title="Add task"
+          >
+            <Check className="h-[18px] w-[18px]" strokeWidth={3} />
+          </button>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/[0.06] text-ink-muted transition-colors hover:bg-rose-400/15 hover:text-rose-200"
+            aria-label={`Dismiss: ${task.title}`}
+            title="Not a task"
+          >
+            <X className="h-[18px] w-[18px]" />
+          </button>
         </div>
       </div>
-      <div className="flex shrink-0 flex-col gap-2">
-        <button
-          onClick={onApprove}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-slate-950 transition-colors hover:bg-emerald-400"
-          aria-label={`Add to tasks: ${task.title}`}
-          title="Add to tasks"
+
+      <button
+        type="button"
+        onClick={() => setContextOpen(open => !open)}
+        className="flex w-full items-center justify-between border-t border-white/[0.06] px-4 py-3 text-left text-xs text-ink-muted transition-colors hover:bg-white/[0.03] hover:text-ink"
+        aria-expanded={contextOpen}
+      >
+        <span>{contextOpen ? "Hide phone context" : "Show phone context"}</span>
+        <motion.span animate={{ rotate: contextOpen ? 180 : 0 }} transition={{ duration: reduceMotion ? 0 : 0.16 }}>
+          <ChevronDown className="h-4 w-4" />
+        </motion.span>
+      </button>
+
+      {contextOpen && (
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: "auto" }}
+          className="overflow-hidden border-t border-white/[0.06] bg-black/15 px-4 py-3"
         >
-          <Check className="h-5 w-5" />
-        </button>
-        <button
-          onClick={onDismiss}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-800 text-slate-400 transition-colors hover:bg-slate-700 hover:text-ink"
-          aria-label={`Dismiss: ${task.title}`}
-          title="Not a task"
-        >
-          <X className="h-5 w-5" />
-        </button>
-      </div>
+          <p className="text-xs leading-5 text-ink-muted">{sourceText}</p>
+          <p className="mt-2 text-xs leading-5 text-ink-faint"><span className="font-semibold text-ink-muted">Next:</span> {task.nextPhysicalAction}</p>
+        </motion.div>
+      )}
     </article>
   );
 }
