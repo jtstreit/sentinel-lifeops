@@ -12,7 +12,6 @@ import {
   Inbox,
   ListChecks,
   MessageSquare,
-  Plus,
   RefreshCw,
   Settings,
   ShieldCheck,
@@ -392,6 +391,7 @@ export default function LifeOpsApp() {
   const [coachTask, setCoachTask] = useState<StoredTask | null>(null);
   const [coachPlan, setCoachPlan] = useState<TaskCoachPlan | null>(null);
   const [isCoaching, setIsCoaching] = useState(false);
+  const [aiReviewEnabled, setAiReviewEnabled] = useState(true);
   const [serverHealth, setServerHealth] = useState<{
     modelProvider?: string;
     modelRuntimeStatus?: string;
@@ -1470,54 +1470,87 @@ export default function LifeOpsApp() {
   };
 
   const renderClaudeReviewPanel = () => (
-    <section className="glass-panel rounded-2xl p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <BrainCircuit className="h-4 w-4 text-accent" />
-            <p className="text-sm font-semibold text-ink">Opus deep review</p>
-          </div>
-          <p className="mt-1.5 text-xs leading-5 text-ink-muted">Use the expensive model only when the task list needs judgment, cleanup, or explanation.</p>
+    <section className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <BrainCircuit className="h-4 w-4 text-accent" />
+          <h3 className="text-sm font-semibold text-ink">AI Review</h3>
         </div>
-        <span className="shrink-0 rounded-full border border-accent/25 bg-accent-soft px-2.5 py-1 text-[10px] font-semibold text-indigo-100">On demand</span>
-      </div>
-
-      <button
-        type="button"
-        onClick={handleCheckRelevance}
-        disabled={isCheckingRelevance || isCoaching || activeFeed.length === 0}
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm font-semibold text-indigo-50 disabled:opacity-45"
-      >
-        <ShieldCheck className="h-4 w-4" /> {isCheckingRelevance ? "Reviewing..." : "Deep-check this list"}
-      </button>
-
-      <div className="mt-3 flex gap-2">
-        <input
-          value={askQuestion}
-          onChange={event => setAskQuestion(event.target.value)}
-          onKeyDown={event => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              handleAskSentinel();
-            }
-          }}
-          className="min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-sm text-ink outline-none placeholder:text-ink-faint focus:border-accent/60"
-          placeholder="Ask Opus about priorities or friction"
-        />
-        <button onClick={handleAskSentinel} disabled={isAsking || isCoaching} className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink disabled:opacity-50">
-          {isAsking ? "..." : "Ask"}
+        <button
+          type="button"
+          onClick={() => setAiReviewEnabled(enabled => !enabled)}
+          className={`relative h-7 w-12 rounded-full border transition-colors ${aiReviewEnabled ? "border-primary/30 bg-primary" : "border-white/10 bg-white/[0.06]"}`}
+          aria-pressed={aiReviewEnabled}
+          aria-label={`${aiReviewEnabled ? "Disable" : "Enable"} AI review`}
+        >
+          <span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${aiReviewEnabled ? "translate-x-5" : "translate-x-0"}`} />
         </button>
       </div>
 
-      {askAnswer && (
-        <div className="mt-3 rounded-xl border border-accent/20 bg-black/20 p-3">
-          <div className="flex items-start justify-between gap-3">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-200">{aiProvenanceLabel(askProvenance)}{askProvenance?.mode ? ` · ${askProvenance.mode}` : ""}</span>
-            <button onClick={() => { setAskAnswer(""); setAskProvenance(null); }} className="text-ink-faint hover:text-ink" aria-label="Clear answer"><X className="h-4 w-4" /></button>
+      <div className="mt-3 grid grid-cols-2 rounded-xl border border-white/[0.07] bg-black/20 p-1">
+        <button
+          type="button"
+          onClick={() => handleExtractTasks(false)}
+          disabled={!aiReviewEnabled || isExtractingTasks || taskReadySignals.length === 0}
+          className="rounded-lg bg-white/[0.09] px-2 py-2 text-xs font-semibold text-ink disabled:opacity-40"
+        >
+          {isExtractingTasks ? "Suggesting..." : "Quick suggest"}
+        </button>
+        <button
+          type="button"
+          onClick={handleCheckRelevance}
+          disabled={!aiReviewEnabled || isCheckingRelevance || isCoaching || activeFeed.length === 0}
+          className="rounded-lg px-2 py-2 text-xs font-semibold text-indigo-100 disabled:opacity-40"
+        >
+          {isCheckingRelevance ? "Reviewing..." : "Opus deep dive"}
+        </button>
+      </div>
+
+      <details className="mt-3 overflow-hidden rounded-xl border border-white/[0.07] bg-black/15">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-3 text-xs font-medium text-ink-muted">
+          Ask Opus about this list <ChevronDown className="h-4 w-4" />
+        </summary>
+        <div className="border-t border-white/[0.06] p-3">
+          <div className="flex gap-2">
+            <input
+              value={askQuestion}
+              onChange={event => setAskQuestion(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  handleAskSentinel();
+                }
+              }}
+              disabled={!aiReviewEnabled}
+              className="min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-black/25 px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint focus:border-accent/60 disabled:opacity-40"
+              placeholder="Ask about priorities or friction"
+            />
+            <button onClick={handleAskSentinel} disabled={!aiReviewEnabled || isAsking || isCoaching} className="rounded-xl bg-primary px-3.5 py-2.5 text-sm font-semibold text-primary-ink disabled:opacity-40">
+              {isAsking ? "..." : "Ask"}
+            </button>
           </div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-ink-muted">{askAnswer}</p>
+
+          {askAnswer && (
+            <div className="mt-3 rounded-xl border border-accent/20 bg-black/20 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-200">{aiProvenanceLabel(askProvenance)}{askProvenance?.mode ? ` · ${askProvenance.mode}` : ""}</span>
+                <button onClick={() => { setAskAnswer(""); setAskProvenance(null); }} className="text-ink-faint hover:text-ink" aria-label="Clear answer"><X className="h-4 w-4" /></button>
+              </div>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-ink-muted">{askAnswer}</p>
+            </div>
+          )}
         </div>
-      )}
+      </details>
+
+      <p className="mb-2 mt-4 text-xs font-semibold text-ink-muted">Context</p>
+      <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-black/15">
+        <button type="button" onClick={() => setActiveTab("signals")} className="flex w-full items-center justify-between border-b border-white/[0.06] px-3.5 py-3 text-left text-xs font-medium text-ink-muted">
+          Full phone messages <ChevronDown className="h-4 w-4 -rotate-90" />
+        </button>
+        <button type="button" onClick={() => syncTelemetryLogs(true)} disabled={isSyncing} className="flex w-full items-center justify-between px-3.5 py-3 text-left text-xs font-medium text-ink-muted disabled:opacity-40">
+          Refresh phone context <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+        </button>
+      </div>
     </section>
   );
 
@@ -1601,6 +1634,7 @@ export default function LifeOpsApp() {
             </button>
             <span className="ml-auto text-[10px] text-ink-faint">{taskReadySignals.length} ready</span>
           </div>
+
         </div>
       </header>
 
@@ -1776,25 +1810,33 @@ export default function LifeOpsApp() {
 
         {activeTab === "signals" && (
           <div className="space-y-4">
-            <section className="glass-panel rounded-3xl p-4">
-              <div className="flex items-start justify-between gap-3">
+            <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 shadow-card">
+              <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">Inbox</p>
-                  <h2 className="mt-1 text-xl font-semibold text-ink">{taskReadySignals.length} task-ready signal{taskReadySignals.length === 1 ? "" : "s"}</h2>
-                  <p className="mt-1 text-xs text-ink-muted">Turn phone activity into short, usable tasks.</p>
+                  <h2 className="text-[22px] font-semibold leading-tight text-ink">Inbox</h2>
+                  <p className="mt-1 text-xs text-ink-muted">{taskReadySignals.length} task-ready signal{taskReadySignals.length === 1 ? "" : "s"}</p>
                 </div>
-                <button type="button" onClick={() => syncTelemetryLogs(true)} disabled={isSyncing} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.05] text-ink-muted" aria-label="Refresh phone signals">
-                  <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+                <div className="flex items-center gap-3">
+                  <div className="h-1.5 w-24 overflow-hidden rounded-full bg-white/[0.08]">
+                    <div className="h-full rounded-full bg-primary" style={{ width: `${taskReadySignals.length === 0 ? 0 : Math.max(18, Math.min(100, (visibleSuggestionTasks.length / taskReadySignals.length) * 100))}%` }} />
+                  </div>
+                  <div className="relative h-10 w-10 rounded-full" style={{ background: "conic-gradient(var(--color-primary) 0 76%, rgb(255 255 255 / 0.08) 76% 100%)" }}>
+                    <div className="absolute inset-[3px] flex items-center justify-center rounded-full bg-surface text-[10px] font-semibold text-primary">{Math.min(99, visibleSuggestionTasks.length)}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 flex items-center gap-2 border-t border-white/[0.06] pt-3">
+                <span className="rounded-full bg-primary/[0.1] px-2.5 py-1 text-[10px] font-medium text-primary">Quick mode</span>
+                <span className="rounded-full border border-accent/20 bg-accent-soft/35 px-2.5 py-1 text-[10px] font-medium text-indigo-100">Opus deep dive</span>
+                <button
+                  type="button"
+                  onClick={() => handleExtractTasks(false)}
+                  disabled={isExtractingTasks || taskReadySignals.length === 0}
+                  className="ml-auto flex items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-ink disabled:opacity-45"
+                >
+                  <Sparkles className="h-3.5 w-3.5" /> {isExtractingTasks ? "Organizing" : "Organize"}
                 </button>
               </div>
-              <button
-                type="button"
-                onClick={() => handleExtractTasks(false)}
-                disabled={isExtractingTasks || taskReadySignals.length === 0}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-ink disabled:opacity-45"
-              >
-                <Sparkles className="h-4 w-4" /> {isExtractingTasks ? "Organizing..." : "Organize tasks"}
-              </button>
             </section>
 
             <section className="space-y-2.5">

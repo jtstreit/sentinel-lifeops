@@ -12,7 +12,7 @@ import {
 import { motion, useReducedMotion } from "motion/react";
 import { formatTo12Hour } from "../cartographer";
 import type { SmartSituation } from "../decisionEngine";
-import { cleanSignalFragment } from "../lifeopsRules";
+import { cleanSignalFragment, normalizeHumanTaskTitle } from "../lifeopsRules";
 import type { ExecutiveTask, SentinelEvent, SentinelSource } from "../types";
 
 function sourceIcon(source: SentinelSource) {
@@ -53,16 +53,16 @@ export function SmartSuggestionCard({
     : "No original phone context is available for this suggestion.";
 
   return (
-    <article className="glass-panel overflow-hidden rounded-2xl">
-      <div className="flex items-start gap-3 p-4">
-        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+    <article className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.05] shadow-soft">
+      <div className="flex items-start gap-3 p-3.5">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/[0.09] text-primary">
           <SourceIcon className="h-[18px] w-[18px]" aria-hidden="true" />
         </div>
 
         <div className="min-w-0 flex-1">
-          <h3 className="text-[15px] font-semibold leading-5 text-ink">{task.title}</h3>
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <span className="rounded-full border border-primary/30 px-2.5 py-0.5 font-medium text-primary">
+          <h3 className="line-clamp-2 text-[15px] font-semibold leading-5 text-ink">{normalizeHumanTaskTitle(task.title, 84) || task.title}</h3>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="font-medium text-primary">
               {urgencyLabel[task.urgency || "soon"] || "Medium"}
             </span>
             <span className="text-ink-muted">{task.estimatedDurationMinutes} min</span>
@@ -74,7 +74,7 @@ export function SmartSuggestionCard({
           <button
             type="button"
             onClick={onApprove}
-            className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-ink shadow-[0_0_20px_rgb(20_240_201_/_0.22)] transition-transform active:scale-95"
+            className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary text-primary-ink shadow-[0_0_20px_rgb(20_240_201_/_0.22)] transition-transform active:scale-95"
             aria-label={`Add to tasks: ${task.title}`}
             title="Add task"
           >
@@ -83,7 +83,7 @@ export function SmartSuggestionCard({
           <button
             type="button"
             onClick={onDismiss}
-            className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/[0.06] text-ink-muted transition-colors hover:bg-rose-400/15 hover:text-rose-200"
+            className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/[0.06] text-ink-muted transition-colors hover:bg-rose-400/15 hover:text-rose-200"
             aria-label={`Dismiss: ${task.title}`}
             title="Not a task"
           >
@@ -95,7 +95,7 @@ export function SmartSuggestionCard({
       <button
         type="button"
         onClick={() => setContextOpen(open => !open)}
-        className="flex w-full items-center justify-between border-t border-white/[0.06] px-4 py-3 text-left text-xs text-ink-muted transition-colors hover:bg-white/[0.03] hover:text-ink"
+        className="flex w-full items-center justify-between border-t border-white/[0.06] px-3.5 py-2.5 text-left text-xs text-ink-muted transition-colors hover:bg-white/[0.03] hover:text-ink"
         aria-expanded={contextOpen}
       >
         <span>{contextOpen ? "Hide phone context" : "Show phone context"}</span>

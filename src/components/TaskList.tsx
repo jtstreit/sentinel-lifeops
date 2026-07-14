@@ -46,12 +46,15 @@ export function TaskList({
   const [filter, setFilter] = useState<UrgencyFilter>("all");
   const [showDone, setShowDone] = useState(false);
 
-  const openTasks = useMemo(
+  const allOpenTasks = useMemo(
     () => tasks
       .filter(task => task.status === "open")
-      .filter(task => filter === "all" || task.urgency === filter)
       .sort(openOrder),
-    [tasks, filter]
+    [tasks]
+  );
+  const openTasks = useMemo(
+    () => allOpenTasks.filter(task => filter === "all" || task.urgency === filter),
+    [allOpenTasks, filter]
   );
   const doneTasks = useMemo(
     () => tasks
@@ -70,7 +73,7 @@ export function TaskList({
   return (
     <section>
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-[18px] font-semibold text-ink">Task list <span className="font-normal text-ink-faint">· {openTasks.length} open, {doneTasks.length} done</span></h2>
+        <h2 className="text-[18px] font-semibold text-ink">Task list <span className="font-normal text-ink-faint">· {allOpenTasks.length} open, {doneTasks.length} done</span></h2>
         {onAdd && (
           <button type="button" onClick={onAdd} className="flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3 text-xs font-semibold text-primary-ink">
             <Plus className="h-4 w-4" /> Add

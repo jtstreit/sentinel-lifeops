@@ -3,6 +3,7 @@ import { ChevronDown, Sparkles, Trash2 } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import type { StoredTask } from "../types";
 import { formatTo12Hour } from "../cartographer";
+import { normalizeHumanTaskTitle } from "../lifeopsRules";
 import { TaskCheckbox } from "./TaskCheckbox";
 
 const urgencyLabel: Record<string, string> = {
@@ -43,7 +44,7 @@ export function TaskCard({
       animate={{ opacity: 1, y: 0 }}
       exit={reduceMotion ? undefined : { opacity: 0, height: 0, overflow: "hidden" }}
       transition={{ duration: 0.18 }}
-      className={`overflow-hidden rounded-2xl border ${done ? "border-white/[0.05] bg-white/[0.025]" : "border-white/[0.08] bg-white/[0.055]"}`}
+      className={`overflow-hidden rounded-2xl border shadow-soft ${done ? "border-white/[0.05] bg-white/[0.025]" : "border-white/[0.08] bg-white/[0.05]"}`}
     >
       <div className="flex items-start gap-3 p-3.5">
         <TaskCheckbox checked={done} label={done ? `Reopen: ${task.title}` : `Complete: ${task.title}`} onToggle={() => onToggleComplete(task)} />
@@ -54,7 +55,7 @@ export function TaskCard({
           className="min-w-0 flex-1 text-left"
           aria-expanded={detailsOpen}
         >
-          <span className={`block text-[15px] font-medium leading-5 ${done ? "text-ink-faint line-through" : "text-ink"}`}>{task.title}</span>
+          <span className={`line-clamp-2 block text-[15px] font-medium leading-5 ${done ? "text-ink-faint line-through" : "text-ink"}`}>{normalizeHumanTaskTitle(task.title, 84) || task.title}</span>
           <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
             {task.urgency && <span className="font-medium text-primary">{urgencyLabel[task.urgency] || task.urgency}</span>}
             <span className="text-ink-muted">{task.estimatedDurationMinutes} min</span>
@@ -87,7 +88,7 @@ export function TaskCard({
                     onToggle={() => onToggleStep(task, step.id)}
                   />
                   <span className={`text-sm ${step.state === "done" ? "text-ink-faint line-through" : "text-ink-muted"}`}>
-                    {step.title} <span className="text-xs text-ink-faint">{step.durationMinutes}m</span>
+                    {normalizeHumanTaskTitle(step.title, 110) || step.title} <span className="text-xs text-ink-faint">{step.durationMinutes}m</span>
                   </span>
                 </li>
               ))}
