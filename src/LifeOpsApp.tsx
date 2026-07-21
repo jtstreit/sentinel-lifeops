@@ -2040,7 +2040,7 @@ export default function LifeOpsApp() {
                 />
               </div>
               <p className="mt-3 text-[11px] leading-4 text-ink-faint">
-                Monarch work and clinical content (including Credible), plus authenticator, password-manager, password, token, private-key, and MFA-like content, is excluded before Drive. Personal Microsoft activity remains available for coaching.
+                Direct Monarch/Credible screens and clearly marked clinical work content are excluded before Drive. Minimal incidental task context may remain in this approved Spark feed. Authenticator, password-manager, password, token, private-key, and MFA-like content stays blocked; personal Microsoft activity remains available for coaching.
               </p>
             </section>
 

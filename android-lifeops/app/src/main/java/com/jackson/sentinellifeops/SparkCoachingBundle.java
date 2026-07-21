@@ -107,7 +107,7 @@ final class SparkCoachingBundle {
                         .put("credentialEventsRemoved", credentialEventsRemoved)
                         .put("redactedEvents", redactedEvents)
                         .put("excludedSurfaces", new JSONArray()
-                                .put("Monarch work and clinical content, including Credible EHR")
+                                .put("Direct Monarch/Credible surfaces and clearly marked clinical work content")
                                 .put("Authenticator and password-manager content")
                                 .put("Passwords, tokens, private keys, and MFA-like content")))
                 .put("events", events);
