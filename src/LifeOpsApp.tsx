@@ -9,6 +9,8 @@ import {
   ChevronDown,
   Clock,
   Crosshair,
+  CloudUpload,
+  FolderOpen,
   Inbox,
   ListChecks,
   MessageSquare,
@@ -65,6 +67,9 @@ type SentinelAndroidBridge = {
   getTelemetryJson: () => string;
   refreshTelemetryJson?: () => string;
   exportTelemetrySnapshotJson?: (baseUrl: string, token: string, forceRefresh: boolean) => string;
+  getSparkDriveStatusJson?: () => string;
+  chooseSparkDriveFolder?: () => void;
+  exportSparkDriveNowJson?: () => string;
   addTelemetryJson: (payloadJson: string) => string;
   extractTasksJson: (logsJson: string) => string;
   openSourceApp?: (packageName: string, source?: string) => void;
@@ -416,6 +421,8 @@ export default function LifeOpsApp() {
     };
   } | null>(null);
   const [androidBridgeStatus, setAndroidBridgeStatus] = useState<Record<string, any> | null>(null);
+  const [sparkDriveStatus, setSparkDriveStatus] = useState<Record<string, any> | null>(null);
+  const [isExportingSparkDrive, setIsExportingSparkDrive] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
   const [showStuckPanel, setShowStuckPanel] = useState(false);
@@ -490,7 +497,23 @@ export default function LifeOpsApp() {
   const refreshAndroidStatus = useCallback(() => {
     if (!androidBridge) return;
     setAndroidBridgeStatus(parseBridgeJson(androidBridge.getBridgeStatusJson(), null));
+    if (androidBridge.getSparkDriveStatusJson) {
+      setSparkDriveStatus(parseBridgeJson(androidBridge.getSparkDriveStatusJson(), null));
+    }
   }, [androidBridge]);
+
+  const exportSparkDriveNow = useCallback(() => {
+    if (!androidBridge?.exportSparkDriveNowJson) return;
+    setIsExportingSparkDrive(true);
+    window.setTimeout(() => {
+      const result = parseBridgeJson<Record<string, any>>(androidBridge.exportSparkDriveNowJson?.(), {});
+      setIsExportingSparkDrive(false);
+      refreshAndroidStatus();
+      setNotice(result.success
+        ? { text: `Spark coaching feed updated with ${result.eventCount || 0} phone signals.`, severity: "info" }
+        : { text: result.error || "Spark coaching export failed.", severity: "error" });
+    }, 50);
+  }, [androidBridge, refreshAndroidStatus]);
 
   const taskAuthHeaders = useMemo(() => ({
     "Content-Type": "application/json",
@@ -730,6 +753,19 @@ export default function LifeOpsApp() {
     refreshAndroidStatus();
     const interval = window.setInterval(refreshAndroidStatus, 10000);
     return () => window.clearInterval(interval);
+  }, [refreshAndroidStatus]);
+
+  useEffect(() => {
+    const handleSparkDriveUpdate = (event: Event) => {
+      refreshAndroidStatus();
+      const customEvent = event as CustomEvent<string>;
+      const result = parseBridgeJson<Record<string, any>>(customEvent.detail, {});
+      setNotice(result.success
+        ? { text: `Spark coaching folder connected and updated with ${result.eventCount || 0} signals.`, severity: "info" }
+        : { text: result.error || "Spark coaching folder connected; the first export is still pending.", severity: "warning" });
+    };
+    window.addEventListener("lifeops-spark-drive-updated", handleSparkDriveUpdate);
+    return () => window.removeEventListener("lifeops-spark-drive-updated", handleSparkDriveUpdate);
   }, [refreshAndroidStatus]);
 
   useEffect(() => {
@@ -1941,6 +1977,71 @@ export default function LifeOpsApp() {
                   </button>
                 </article>
               ))}
+            </section>
+
+            <section className="rounded-2xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-violet-300" />
+                    <h3 className="text-base font-semibold text-ink">Spark coaching feed</h3>
+                    <Pill tone={sparkDriveStatus?.configured ? "success" : "warn"}>
+                      {sparkDriveStatus?.configured ? "Connected" : "Needs folder"}
+                    </Pill>
+                  </div>
+                  <p className="mt-1.5 text-xs leading-5 text-ink-muted">
+                    Every 12 hours, LifeOps writes a privacy-filtered scan of the rolling previous 24 hours to Google Drive for personalized Spark coaching.
+                  </p>
+                  {sparkDriveStatus?.folderName && (
+                    <p className="mt-2 text-xs font-semibold text-violet-200">Folder: {sparkDriveStatus.folderName}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
+                  <p className="text-slate-500">Schedule</p>
+                  <p className="font-bold text-ink">Every {sparkDriveStatus?.scheduleHours || 12} hours</p>
+                </div>
+                <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
+                  <p className="text-slate-500">Last export</p>
+                  <p className="font-bold text-ink">{sparkDriveStatus?.lastExportAt ? formatRelativeTime(sparkDriveStatus.lastExportAt) : "Not yet"}</p>
+                </div>
+                <div className="rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs">
+                  <p className="text-slate-500">Signals delivered</p>
+                  <p className="font-bold text-ink">{sparkDriveStatus?.lastExportCount || 0}</p>
+                </div>
+              </div>
+
+              {sparkDriveStatus?.lastExportError && (
+                <p className="mt-3 rounded-xl border border-rose-400/20 bg-rose-950/20 px-3 py-2 text-xs text-rose-100">
+                  Last export: {sparkDriveStatus.lastExportError}
+                </p>
+              )}
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <ActionButton
+                  icon={FolderOpen}
+                  label={sparkDriveStatus?.configured ? "Change Drive folder" : "Choose Drive folder"}
+                  hint="One-time Google Drive access"
+                  tone="slate"
+                  disabled={!isAndroidBridgeAvailable || !androidBridge?.chooseSparkDriveFolder}
+                  onClick={() => {
+                    androidBridge?.chooseSparkDriveFolder?.();
+                    setNotice({ text: "Choose the LifeOps Spark Coaching folder in Google Drive.", severity: "info" });
+                  }}
+                />
+                <ActionButton
+                  icon={CloudUpload}
+                  label={isExportingSparkDrive ? "Exporting..." : "Export now"}
+                  hint="Refresh the rolling 24-hour feed"
+                  disabled={!sparkDriveStatus?.configured || isExportingSparkDrive || !androidBridge?.exportSparkDriveNowJson}
+                  onClick={exportSparkDriveNow}
+                />
+              </div>
+              <p className="mt-3 text-[11px] leading-4 text-ink-faint">
+                Monarch work and clinical content (including Credible), plus authenticator, password-manager, password, token, private-key, and MFA-like content, is excluded before Drive. Personal Microsoft activity remains available for coaching.
+              </p>
             </section>
 
             <section className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">

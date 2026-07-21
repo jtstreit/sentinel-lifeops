@@ -15,12 +15,16 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
+import androidx.documentfile.provider.DocumentFile;
 import androidx.work.Constraints;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
+
+import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -33,6 +37,7 @@ import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 8042;
+    private static final int SPARK_DRIVE_FOLDER_REQUEST_CODE = 8043;
     private static final String APP_HOST = "sentinel.lifeops.local";
     private static final String LIFEOPS_API_HOST = "sentinel-lifeops-api.onrender.com";
     private static final String APP_URL = "https://" + APP_HOST + "/index.html";
@@ -94,6 +99,7 @@ public class MainActivity extends Activity {
         applySystemBarInsets();
         requestCorePermissions();
         scheduleBackgroundTelemetryExport();
+        scheduleSparkDriveExport();
         webView.loadUrl(APP_URL);
     }
 
@@ -112,6 +118,60 @@ public class MainActivity extends Activity {
                 "lifeops-telemetry-export",
                 ExistingPeriodicWorkPolicy.UPDATE,
                 request);
+    }
+
+    private void scheduleSparkDriveExport() {
+        PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
+                SparkDriveExportWorker.class, 12, TimeUnit.HOURS)
+                .setConstraints(new Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build())
+                .build();
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+                "lifeops-spark-drive-export",
+                ExistingPeriodicWorkPolicy.UPDATE,
+                request);
+    }
+
+    public void chooseSparkDriveFolder() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        startActivityForResult(intent, SPARK_DRIVE_FOLDER_REQUEST_CODE);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != SPARK_DRIVE_FOLDER_REQUEST_CODE || resultCode != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+
+        Uri treeUri = data.getData();
+        int grantFlags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            getContentResolver().takePersistableUriPermission(treeUri, grantFlags);
+            DocumentFile folder = DocumentFile.fromTreeUri(this, treeUri);
+            String folderName = folder == null || folder.getName() == null ? "Google Drive folder" : folder.getName();
+            SparkDriveExportManager.saveFolder(this, treeUri, folderName);
+            Toast.makeText(this, "Spark coaching folder connected", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                JSONObject result = SparkDriveExportManager.exportNow(getApplicationContext());
+                runOnUiThread(() -> notifySparkDriveUpdated(result));
+            }, "spark-drive-export-now").start();
+        } catch (Exception error) {
+            Toast.makeText(this, "Could not keep access to that folder", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void notifySparkDriveUpdated(JSONObject result) {
+        if (webView == null) return;
+        String detail = result == null ? "{}" : result.toString();
+        webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('lifeops-spark-drive-updated',{detail:" + JSONObject.quote(detail) + "}))",
+                null);
     }
 
     private void applySystemBarInsets() {

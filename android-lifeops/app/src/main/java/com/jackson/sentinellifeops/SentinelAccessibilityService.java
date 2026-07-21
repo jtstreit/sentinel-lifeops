@@ -73,6 +73,9 @@ public class SentinelAccessibilityService extends AccessibilityService {
         if (isIgnoredScreenPackage(packageName)) {
             return;
         }
+        if (MicrosoftTelemetryFilter.isExcludedTelemetry("screen_text", packageName, "", snapshot, null)) {
+            return;
+        }
         String snapshotKey = packageName + ":" + snapshot;
         long now = System.currentTimeMillis();
         if (snapshotKey.equals(lastSnapshotKey) && now - lastSnapshotAt < POLL_INTERVAL_MS) {
@@ -181,7 +184,6 @@ public class SentinelAccessibilityService extends AccessibilityService {
                 || clean.contains("launcher")
                 || clean.contains("permissioncontroller")
                 || clean.contains("inputmethod")
-                || clean.contains("keyboard")
-                || MicrosoftTelemetryFilter.isMicrosoftPackageName(clean);
+                || clean.contains("keyboard");
     }
 }

@@ -138,6 +138,23 @@ public class SentinelBridge {
     }
 
     @JavascriptInterface
+    public String getSparkDriveStatusJson() {
+        return SparkDriveExportManager.status(context).toString();
+    }
+
+    @JavascriptInterface
+    public void chooseSparkDriveFolder() {
+        if (activity != null) {
+            activity.runOnUiThread(activity::chooseSparkDriveFolder);
+        }
+    }
+
+    @JavascriptInterface
+    public String exportSparkDriveNowJson() {
+        return SparkDriveExportManager.exportNow(context).toString();
+    }
+
+    @JavascriptInterface
     public synchronized String exportTelemetrySnapshotJson(String baseUrl, String token, boolean forceRefresh) {
         try {
             return exportTelemetrySnapshot(baseUrl, token, forceRefresh).toString();
@@ -179,6 +196,10 @@ public class SentinelBridge {
         cachedTelemetryJson = out.toString();
         cachedTelemetryAt = now;
         return cachedTelemetryJson;
+    }
+
+    JSONObject buildSparkCoachingBundle(long now) throws Exception {
+        return SparkCoachingBundle.build(new JSONObject(getTelemetryJson(true)), now);
     }
 
     JSONObject exportTelemetrySnapshot(String baseUrl, String token, boolean forceRefresh) throws Exception {
@@ -279,6 +300,14 @@ public class SentinelBridge {
                     payload.optString("content", ""),
                     capturedAt > 0L ? capturedAt : System.currentTimeMillis()
             );
+            if (MicrosoftTelemetryFilter.isExcludedTelemetry(
+                    log.optString("source", "user_note"),
+                    log.optString("packageName", ""),
+                    log.optString("title", ""),
+                    log.optString("content", ""),
+                    log.optJSONObject("metadata"))) {
+                return new JSONObject().put("success", true).put("filtered", true).toString();
+            }
             JSONArray logs = getCustomLogs();
             JSONArray next = new JSONArray();
             next.put(log);
@@ -576,7 +605,6 @@ public class SentinelBridge {
                 if (count >= MAX_USAGE_LOGS || logs.length() >= MAX_LOGS) break;
                 if (stat.getTotalTimeInForeground() <= 0) continue;
                 String label = labelForPackage(stat.getPackageName());
-                if (MicrosoftTelemetryFilter.isMicrosoftAppTelemetry(stat.getPackageName(), "App usage: " + label, "", null)) continue;
                 if (isIgnoredUsagePackageForCapture(stat.getPackageName(), label)) continue;
                 long minutes = Math.max(1, stat.getTotalTimeInForeground() / 60000L);
                 logs.put(createLog("app_usage", "App usage: " + label, minutes + " minutes foreground in the last 24 hours", stat.getLastTimeUsed())
@@ -701,7 +729,7 @@ public class SentinelBridge {
                 String content = item.optString("content", "");
                 String packageName = item.optString("packageName", "");
                 JSONObject metadata = item.optJSONObject("metadata");
-                if (MicrosoftTelemetryFilter.isMicrosoftAppTelemetry(packageName, title, content, metadata)) {
+                if (MicrosoftTelemetryFilter.isExcludedTelemetry(source, packageName, title, content, metadata)) {
                     continue;
                 }
                 long capturedAt = item.optLong("capturedAtEpochMillis", 0L);
