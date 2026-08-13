@@ -10,6 +10,7 @@
 // after its imports execute, so an import-time read would always see an empty env in local dev.
 // If DATABASE_URL is unset, every function is a no-op and the server runs file-only as before.
 import pg from "pg";
+import type { TelemetryArchiveQuery } from "./telemetryPagination";
 
 const { Pool } = pg;
 
@@ -17,6 +18,12 @@ const { Pool } = pg;
 export interface TelemetryDbRecord {
   id: string;
   capturedAtEpochMillis?: number;
+}
+
+export interface TelemetryArchivePage {
+  logs: unknown[];
+  hasMore: boolean;
+  nextCursor: { capturedAtEpochMillis: number; id: string } | null;
 }
 
 let pool: pg.Pool | null = null;
@@ -53,6 +60,8 @@ export async function ensureTelemetrySchema(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS lifeops_telemetry_captured_idx
       ON lifeops_telemetry (captured_at_epoch_millis DESC);
+    CREATE INDEX IF NOT EXISTS lifeops_telemetry_page_idx
+      ON lifeops_telemetry (captured_at_epoch_millis DESC, id DESC);
   `);
 }
 
@@ -84,4 +93,52 @@ export async function loadTelemetryLogsFromDb(limit = 500): Promise<unknown[]> {
     [limit]
   );
   return result.rows.map((row: { data: unknown }) => row.data);
+}
+
+export async function loadTelemetryArchivePageFromDb(query: TelemetryArchiveQuery): Promise<TelemetryArchivePage> {
+  const db = getPool();
+  if (!db) throw new Error("Telemetry archive database is unavailable");
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const add = (value: unknown) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+
+  if (query.after !== undefined) {
+    conditions.push(`captured_at_epoch_millis >= ${add(query.after)}::bigint`);
+  }
+  if (query.before !== undefined) {
+    conditions.push(`captured_at_epoch_millis < ${add(query.before)}::bigint`);
+  }
+  if (query.cursor) {
+    const epoch = add(query.cursor.capturedAtEpochMillis);
+    const id = add(query.cursor.id);
+    conditions.push(`(captured_at_epoch_millis, id) < (${epoch}::bigint, ${id}::text)`);
+  }
+  const rowLimit = add(query.limit + 1);
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const result = await db.query(
+    `SELECT id, captured_at_epoch_millis, data
+       FROM lifeops_telemetry
+       ${where}
+      ORDER BY captured_at_epoch_millis DESC, id DESC
+      LIMIT ${rowLimit}`,
+    params,
+  );
+  const hasMore = result.rows.length > query.limit;
+  const rows = result.rows.slice(0, query.limit) as Array<{
+    id: string;
+    captured_at_epoch_millis: string | number;
+    data: unknown;
+  }>;
+  const last = rows.at(-1);
+  return {
+    logs: rows.map((row) => row.data),
+    hasMore,
+    nextCursor: hasMore && last
+      ? { capturedAtEpochMillis: Number(last.captured_at_epoch_millis), id: String(last.id) }
+      : null,
+  };
 }

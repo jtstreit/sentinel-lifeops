@@ -82,4 +82,45 @@ describe("telemetryDb", () => {
     expect(sql).toContain("ORDER BY captured_at_epoch_millis DESC");
     expect(params).toEqual([250]);
   });
+
+  it("loads a deterministic archive page and returns a keyset cursor", async () => {
+    process.env.DATABASE_URL = "postgres://example";
+    const db = await loadModule();
+    const rows = [
+      { id: "c", captured_at_epoch_millis: "300", data: { id: "c" } },
+      { id: "b", captured_at_epoch_millis: "200", data: { id: "b" } },
+      { id: "a", captured_at_epoch_millis: "200", data: { id: "a" } },
+    ];
+    queryMock.mockResolvedValue({ rows });
+    const page = await db.loadTelemetryArchivePageFromDb({
+      limit: 2,
+      after: 100,
+      before: 400,
+      cursor: { capturedAtEpochMillis: 350, id: "z" },
+    });
+    expect(page).toEqual({
+      logs: [{ id: "c" }, { id: "b" }],
+      hasMore: true,
+      nextCursor: { capturedAtEpochMillis: 200, id: "b" },
+    });
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain("captured_at_epoch_millis >= $1::bigint");
+    expect(sql).toContain("captured_at_epoch_millis < $2::bigint");
+    expect(sql).toContain("(captured_at_epoch_millis, id) < ($3::bigint, $4::text)");
+    expect(sql).toContain("ORDER BY captured_at_epoch_millis DESC, id DESC");
+    expect(params).toEqual([100, 400, 350, "z", 3]);
+  });
+
+  it("returns no cursor when an archive page is complete", async () => {
+    process.env.DATABASE_URL = "postgres://example";
+    const db = await loadModule();
+    queryMock.mockResolvedValue({
+      rows: [{ id: "a", captured_at_epoch_millis: 100, data: { id: "a" } }],
+    });
+    await expect(db.loadTelemetryArchivePageFromDb({ limit: 2 })).resolves.toEqual({
+      logs: [{ id: "a" }],
+      hasMore: false,
+      nextCursor: null,
+    });
+  });
 });

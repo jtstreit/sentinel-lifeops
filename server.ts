@@ -22,9 +22,15 @@ import type { StoredTask } from "./src/types";
 import {
   ensureTelemetrySchema,
   isTelemetryDbEnabled,
+  loadTelemetryArchivePageFromDb,
   loadTelemetryLogsFromDb,
   saveTelemetryLogsToDb,
 } from "./src/telemetryDb";
+import {
+  encodeTelemetryArchiveCursor,
+  parseTelemetryArchiveQuery,
+  TelemetryArchiveQueryError,
+} from "./src/telemetryPagination";
 import {
   ensureTasksSchema,
   isTasksDbEnabled,
@@ -1213,19 +1219,48 @@ app.get("/api/config-diagnostics", (req, res) => {
   });
 });
 
-app.get("/api/telemetry", (req, res) => {
+app.get("/api/telemetry", async (req, res) => {
   if (!requestHasValidIngestToken(req) && !isLoopbackRequest(req)) {
     res.status(401).json({ error: "Invalid or missing Sentinel ingest token" });
     return;
   }
 
-  res.json({
-    logs: globalTelemetryLogs,
+  const base = {
     mode: "node-dev-file-store",
     persistent: true,
     dbPersistent: isTelemetryDbEnabled(),
     ingestAuthRequired: Boolean(process.env.SENTINEL_INGEST_TOKEN),
-  });
+  };
+  try {
+    const parsed = parseTelemetryArchiveQuery(req.query as Record<string, string | string[] | undefined>);
+    if (!parsed.requested) {
+      res.json({ logs: globalTelemetryLogs, ...base });
+      return;
+    }
+    if (!isTelemetryDbEnabled()) {
+      res.status(503).json({ error: "telemetry_archive_unavailable" });
+      return;
+    }
+    const archive = await loadTelemetryArchivePageFromDb(parsed.query);
+    res.json({
+      logs: archive.logs,
+      ...base,
+      page: {
+        limit: parsed.query.limit,
+        hasMore: archive.hasMore,
+        nextCursor: archive.nextCursor ? encodeTelemetryArchiveCursor(archive.nextCursor) : null,
+        after: parsed.query.after ?? null,
+        before: parsed.query.before ?? null,
+      },
+    });
+  } catch (error) {
+    if (error instanceof TelemetryArchiveQueryError) {
+      res.status(400).json({ error: "invalid_telemetry_query", detail: error.message });
+      return;
+    }
+    console.warn(`[sentinel-lifeops] Telemetry archive query failed: ${getErrorMessage(error)}`);
+    res.status(503).json({ error: "telemetry_archive_unavailable" });
+  }
 });
 
 app.post("/api/telemetry", (req, res) => {
@@ -1269,7 +1304,7 @@ app.post("/api/telemetry/bulk", (req, res) => {
     return;
   }
 
-  const imported: TelemetryLog[] = [];
+  const importedById = new Map<string, TelemetryLog>();
   const rejected: Array<{ index: number; error: string }> = [];
   let filtered = 0;
   rawLogs.slice(0, 500).forEach((rawLog: unknown, index: number) => {
@@ -1282,8 +1317,13 @@ app.post("/api/telemetry/bulk", (req, res) => {
       filtered++;
       return;
     }
-    imported.push(log);
+    const existing = importedById.get(log.id);
+    if (!existing || (log.capturedAtEpochMillis || 0) >= (existing.capturedAtEpochMillis || 0)) {
+      importedById.set(log.id, log);
+    }
   });
+
+  const imported = [...importedById.values()];
 
   const importedIds = new Set(imported.map(log => log.id));
   globalTelemetryLogs = [...imported, ...globalTelemetryLogs.filter(log => !importedIds.has(log.id))]
