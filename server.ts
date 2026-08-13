@@ -1576,7 +1576,7 @@ ${contextJson}`,
         }
         const knownSituationIds = new Set<string>(situations.map((s: any) => String(s?.id || "")).filter(Boolean));
         const sanitized = sanitizeExtractedTasks(aiResult.output, knownLogIds, knownSituationIds);
-        aiResult = sanitized.length > 0 ? { ...aiResult, output: sanitized } : null;
+        aiResult = { ...aiResult, output: sanitized };
       }
     } else {
       // Flat-log mode remains request-compatible, but now asks the model to preserve evidence
@@ -1593,7 +1593,7 @@ ${contextJson}`,
       if (aiResult) {
         const knownLogIds = new Set<string>(logs.map((log: any) => String(log?.id || "")).filter(Boolean));
         const sanitized = sanitizeExtractedTasks(aiResult.output, knownLogIds, new Set<string>());
-        aiResult = sanitized.length > 0 ? { ...aiResult, output: sanitized } : null;
+        aiResult = { ...aiResult, output: sanitized };
       }
     }
 
