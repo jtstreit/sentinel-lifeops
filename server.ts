@@ -1579,16 +1579,22 @@ ${contextJson}`,
         aiResult = sanitized.length > 0 ? { ...aiResult, output: sanitized } : null;
       }
     } else {
-      // Legacy mode (logs only): unchanged flat-list prompt so old clients behave identically.
+      // Flat-log mode remains request-compatible, but now asks the model to preserve evidence
+      // traceability and explain urgency so background intake can issue useful reminders.
       const prompt = logs
-        .map((log: any) => `[${log.timestamp || ""}] (${log.source || "action"}) ${log.title || ""}: ${log.content || ""}`)
+        .map((log: any) => `[id=${String(log.id || "")}] [${log.timestamp || ""}] (${log.source || "action"}) ${log.title || ""}: ${log.content || ""}`)
         .join("\n");
       aiResult = await askClaudeForJsonArray(
-        `You are an executive-function task extractor. Return JSON only: an array of tasks with title, estimatedDurationMinutes, optional targetTime in HH:MM 24-hour format when explicitly inferable, avoidanceTarget, nextPhysicalAction, and steps. Write every title like a normal short to-do: "Pick up meds", "Send the form", or "Call Mom back". Remove polite wrappers, timestamps, and notification wording. Never use labels such as "Handle:", "Prepare item:", "Send or submit:", "Act on:", or "Follow up:". Each step must include title and durationMinutes and use the same plain language. Keep tasks concrete and physically actionable. Extract tasks only from concrete requests, deadlines, appointments, meetings, missed calls, or preparation commitments. Do not create tasks from ordinary app usage, foreground app minutes, incoming or outgoing call duration, weather, battery, charging, ads, or vague date words without an action. Current runtime reference: ${requestContext.readable} (${requestContext.iso}).`,
+        `You are an executive-function task extractor. Return JSON only: an array of at most 8 tasks with keys title, why, urgency, estimatedDurationMinutes, targetTime, avoidanceTarget, nextPhysicalAction, steps, sourceLogIds, and situationId. why must briefly quote or paraphrase the concrete evidence and explain why action is needed. urgency must be "now", "soon", or "later" from explicit deadlines, expiration language, missed calls, appointments, or requests; use "later" when the evidence has no immediate timing cue. targetTime is HH:MM 24-hour format only when explicitly inferable, otherwise null. sourceLogIds must contain only the exact ids printed in [id=...] for evidence actually supporting that task. situationId must be null. Write every title like a normal short to-do: "Pick up meds", "Send the form", or "Call Mom back". Remove polite wrappers, timestamps, and notification wording. Never use labels such as "Handle:", "Prepare item:", "Send or submit:", "Act on:", or "Follow up:". Each step must include title and durationMinutes and use the same plain language. Keep tasks concrete and physically actionable. Extract tasks only from concrete requests, deadlines, appointments, meetings, missed calls, or preparation commitments. Do not create tasks from ordinary app usage, foreground app minutes, incoming or outgoing call duration, weather, battery, charging, ads, promotional offers, political solicitations, one-time passcodes, debt-collector advertisements without a stated deadline, or vague date words without an action. Current runtime reference: ${requestContext.readable} (${requestContext.iso}).`,
         prompt,
         "fast",
         ExtractedTaskOutputSchema,
       );
+      if (aiResult) {
+        const knownLogIds = new Set<string>(logs.map((log: any) => String(log?.id || "")).filter(Boolean));
+        const sanitized = sanitizeExtractedTasks(aiResult.output, knownLogIds, new Set<string>());
+        aiResult = sanitized.length > 0 ? { ...aiResult, output: sanitized } : null;
+      }
     }
 
     res.json({
