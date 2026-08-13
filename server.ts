@@ -125,7 +125,7 @@ const ExtractedTaskOutputSchema = z.array(z.object({
   urgency: z.enum(["now", "soon", "later"]).optional(),
   targetTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
   estimatedDurationMinutes: z.number().finite().int().min(1).max(480),
-  avoidanceTarget: z.string().trim().max(240).optional(),
+  avoidanceTarget: z.string().trim().max(240).nullable().optional(),
   nextPhysicalAction: z.string().trim().min(1).max(280),
   steps: z.array(z.object({
     title: z.string().trim().min(1).max(180),
